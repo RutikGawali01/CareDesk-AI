@@ -334,6 +334,12 @@ const findPatientAppointmentFunction = {
           description:
             "Optional appointment start time in HH:MM format.",
         },
+
+        appointmentId: {
+          type: "integer",
+          description:
+            "Optional exact appointment ID when verifying a specific appointment.",
+        },
       },
 
       required: ["patientId"],
@@ -924,12 +930,27 @@ Email is optional.
         else if (
           toolName === "find_patient_appointment"
         ) {
-          result =
-            await findPatientAppointmentTool({
-              ...args,
-
+          const appointmentLookupArgs = { ...args };
+          if (callerPhone) {
+            const verifiedPatient = await findPatientTool({
+              phone: callerPhone,
               clinicId,
             });
+            if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+              result = { found: false, message: "Your patient record could not be verified." };
+            } else {
+              appointmentLookupArgs.patientId = verifiedPatient.patient.id;
+              result = await findPatientAppointmentTool({
+                ...appointmentLookupArgs,
+                clinicId,
+              });
+            }
+          } else {
+            result = await findPatientAppointmentTool({
+              ...appointmentLookupArgs,
+              clinicId,
+            });
+          }
         }
 
         // ====================================================
@@ -993,12 +1014,22 @@ Email is optional.
                 "Appointment cancellation is currently disabled.",
             };
           } else {
-            result =
-              await cancelAppointmentTool({
-                ...args,
+            let canCancel = true;
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
+              const ownedAppointment = verifiedPatient?.patient?.id
+                ? await findPatientAppointmentTool({
+                    clinicId,
+                    patientId: verifiedPatient.patient.id,
+                    appointmentId: args.appointmentId,
+                  })
+                : { found: false };
+              canCancel = Boolean(ownedAppointment?.found);
+            }
 
-                clinicId,
-              });
+            result = canCancel
+              ? await cancelAppointmentTool({ ...args, clinicId })
+              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
           }
         }
 
@@ -1017,12 +1048,22 @@ Email is optional.
                 "Appointment rescheduling is currently disabled.",
             };
           } else {
-            result =
-              await rescheduleAppointmentTool({
-                ...args,
+            let canReschedule = true;
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
+              const ownedAppointment = verifiedPatient?.patient?.id
+                ? await findPatientAppointmentTool({
+                    clinicId,
+                    patientId: verifiedPatient.patient.id,
+                    appointmentId: args.appointmentId,
+                  })
+                : { found: false };
+              canReschedule = Boolean(ownedAppointment?.found);
+            }
 
-                clinicId,
-              });
+            result = canReschedule
+              ? await rescheduleAppointmentTool({ ...args, clinicId })
+              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
           }
         }
 
