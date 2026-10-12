@@ -11,12 +11,14 @@ async function checkAvailabilityTool({
   doctorId,
   appointmentDate,
   startTime,
+  excludeAppointmentId,
 }) {
   return await checkAvailability(
     doctorId,
     appointmentDate,
     startTime,
-    clinicId
+    clinicId,
+    excludeAppointmentId
   );
 }
 
