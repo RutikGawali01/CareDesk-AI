@@ -205,18 +205,30 @@ async function checkAvailability(
     const beforeIndex = requestedIndex - distance;
     const afterIndex = requestedIndex + distance;
 
-    if (
-      beforeIndex >= 0 &&
-      !bookedTimes.includes(allSlots[beforeIndex])
-    ) {
-      alternatives.push(allSlots[beforeIndex]);
+    if (beforeIndex >= 0) {
+      const candidate = allSlots[beforeIndex];
+      let candidateIsFuture = true;
+      try {
+        validateSlotIsNotInPast(appointmentDate, candidate);
+      } catch {
+        candidateIsFuture = false;
+      }
+      if (candidateIsFuture && !bookedTimes.includes(candidate)) {
+        alternatives.push(candidate);
+      }
     }
 
-    if (
-      afterIndex < allSlots.length &&
-      !bookedTimes.includes(allSlots[afterIndex])
-    ) {
-      alternatives.push(allSlots[afterIndex]);
+    if (afterIndex < allSlots.length) {
+      const candidate = allSlots[afterIndex];
+      let candidateIsFuture = true;
+      try {
+        validateSlotIsNotInPast(appointmentDate, candidate);
+      } catch {
+        candidateIsFuture = false;
+      }
+      if (candidateIsFuture && !bookedTimes.includes(candidate)) {
+        alternatives.push(candidate);
+      }
     }
 
     if (alternatives.length >= 2) {
