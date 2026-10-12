@@ -24,23 +24,25 @@ const {
 // DATE HELPERS
 // ============================================================
 
-function formatDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
+function getIndiaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(({ type, value }) => [type, value]));
 }
 
 function getTodayDate() {
-  return formatDate(new Date());
+  const { year, month, day } = getIndiaDateParts();
+  return `${year}-${month}-${day}`;
 }
 
 function getTomorrowDate() {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  return formatDate(tomorrow);
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const { year, month, day } = getIndiaDateParts(tomorrow);
+  return `${year}-${month}-${day}`;
 }
 
 // ============================================================
@@ -703,7 +705,9 @@ If multiple appointments exist, ask which one. Never guess.
 BOOKING PERMISSION
 ============================================================
 
-If allowBooking is disabled, do not call book_appointment. If allowAppointmentChanges is disabled, do not call cancel_appointment or reschedule_appointment. You may still look up patients, doctors, availability, and appointments. Explain clearly when a requested action is unavailable.
+Booking permission: ${allowBooking ? "ENABLED" : "DISABLED"}.
+Cancellation/rescheduling permission: ${allowAppointmentChanges ? "ENABLED" : "DISABLED"}.
+Never call book_appointment unless booking is enabled. Never call cancel_appointment or reschedule_appointment unless cancellation/rescheduling is enabled. If a requested action is disabled, explain that clearly and do not suggest a workaround that could create an unintended booking.
 
 ============================================================
 TOOL FAILURE
