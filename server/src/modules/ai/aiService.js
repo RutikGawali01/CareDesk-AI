@@ -49,12 +49,75 @@ function getTomorrowDate() {
 // OPENROUTER CLIENT
 // ============================================================
 
-const client = new OpenAI({
+const openRouterClient = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
-  apiKey:
-    process.env.OPENROUTER_API_KEY ||
-    "dummy-key-for-initialization",
+  apiKey: process.env.OPENROUTER_API_KEY || "missing-openrouter-key",
 });
+
+const groqClient = process.env.GROQ_API_KEY
+  ? new OpenAI({
+      baseURL: "https://api.groq.com/openai/v1",
+      apiKey: process.env.GROQ_API_KEY,
+    })
+  : null;
+
+const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const FALLBACK_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+
+function isProviderCapacityError(error) {
+  const status = error?.status || error?.statusCode;
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    [401, 402, 403, 408, 429, 500, 502, 503, 504].includes(status) ||
+    /quota|rate.?limit|too many requests|insufficient credits|temporarily unavailable|provider.*(busy|unavailable)/i.test(message)
+  );
+}
+
+async function createChatCompletion(messages, tools) {
+  if (!process.env.OPENROUTER_API_KEY) {
+    if (!groqClient) {
+      throw new Error("Configure OPENROUTER_API_KEY or GROQ_API_KEY in the server environment.");
+    }
+    console.warn("[AI] OPENROUTER_API_KEY missing; using Groq fallback.");
+    return groqClient.chat.completions.create({
+      model: FALLBACK_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
+  }
+
+  try {
+    return await openRouterClient.chat.completions.create({
+      model: PRIMARY_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
+  } catch (primaryError) {
+    if (!groqClient || !isProviderCapacityError(primaryError)) {
+      throw primaryError;
+    }
+
+    console.warn(
+      `[AI] OpenRouter request failed (status ${primaryError.status || "unknown"}); retrying with Groq model ${FALLBACK_MODEL}.`
+    );
+
+    try {
+      return await groqClient.chat.completions.create({
+        model: FALLBACK_MODEL,
+        messages,
+        tools,
+        tool_choice: "auto",
+      });
+    } catch (fallbackError) {
+      console.error(
+        `[AI] Both providers failed. OpenRouter status: ${primaryError.status || "unknown"}; Groq status: ${fallbackError.status || "unknown"}.`
+      );
+      throw new Error("AI providers are temporarily unavailable. Please try again shortly.");
+    }
+  }
+}
 
 // ============================================================
 // TOOL DEFINITIONS
@@ -760,15 +823,7 @@ Email is optional.
   // ==========================================================
 
   while (true) {
-    const response = await client.chat.completions.create({
-      model: "openrouter/free",
-
-      messages,
-
-      tools,
-
-      tool_choice: "auto",
-    });
+    const response = await createChatCompletion(messages, tools);
 
     const assistantMessage = response.choices[0].message;
 
