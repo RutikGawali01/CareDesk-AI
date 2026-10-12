@@ -24,35 +24,100 @@ const {
 // DATE HELPERS
 // ============================================================
 
-function formatDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
+function getIndiaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(({ type, value }) => [type, value]));
 }
 
 function getTodayDate() {
-  return formatDate(new Date());
+  const { year, month, day } = getIndiaDateParts();
+  return `${year}-${month}-${day}`;
 }
 
 function getTomorrowDate() {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  return formatDate(tomorrow);
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const { year, month, day } = getIndiaDateParts(tomorrow);
+  return `${year}-${month}-${day}`;
 }
 
 // ============================================================
 // OPENROUTER CLIENT
 // ============================================================
 
-const client = new OpenAI({
+const openRouterClient = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
-  apiKey:
-    process.env.OPENROUTER_API_KEY ||
-    "dummy-key-for-initialization",
+  apiKey: process.env.OPENROUTER_API_KEY || "missing-openrouter-key",
 });
+
+const groqClient = process.env.GROQ_API_KEY
+  ? new OpenAI({
+      baseURL: "https://api.groq.com/openai/v1",
+      apiKey: process.env.GROQ_API_KEY,
+    })
+  : null;
+
+const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const FALLBACK_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+
+function isProviderCapacityError(error) {
+  const status = error?.status || error?.statusCode;
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    [401, 402, 403, 408, 429, 500, 502, 503, 504].includes(status) ||
+    /quota|rate.?limit|too many requests|insufficient credits|temporarily unavailable|provider.*(busy|unavailable)/i.test(message)
+  );
+}
+
+async function createChatCompletion(messages, tools) {
+  if (!process.env.OPENROUTER_API_KEY) {
+    if (!groqClient) {
+      throw new Error("Configure OPENROUTER_API_KEY or GROQ_API_KEY in the server environment.");
+    }
+    console.warn("[AI] OPENROUTER_API_KEY missing; using Groq fallback.");
+    return groqClient.chat.completions.create({
+      model: FALLBACK_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
+  }
+
+  try {
+    return await openRouterClient.chat.completions.create({
+      model: PRIMARY_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
+  } catch (primaryError) {
+    if (!groqClient || !isProviderCapacityError(primaryError)) {
+      throw primaryError;
+    }
+
+    console.warn(
+      `[AI] OpenRouter request failed (status ${primaryError.status || "unknown"}); retrying with Groq model ${FALLBACK_MODEL}.`
+    );
+
+    try {
+      return await groqClient.chat.completions.create({
+        model: FALLBACK_MODEL,
+        messages,
+        tools,
+        tool_choice: "auto",
+      });
+    } catch (fallbackError) {
+      console.error(
+        `[AI] Both providers failed. OpenRouter status: ${primaryError.status || "unknown"}; Groq status: ${fallbackError.status || "unknown"}.`
+      );
+      throw new Error("AI providers are temporarily unavailable. Please try again shortly.");
+    }
+  }
+}
 
 // ============================================================
 // TOOL DEFINITIONS
@@ -332,6 +397,12 @@ const findPatientAppointmentFunction = {
           description:
             "Optional appointment start time in HH:MM format.",
         },
+
+        appointmentId: {
+          type: "integer",
+          description:
+            "Optional exact appointment ID when verifying a specific appointment.",
+        },
       },
 
       required: ["patientId"],
@@ -446,7 +517,11 @@ async function askAI(
   previousMessages = [],
   allowBooking = false,
   clinicId,
-  { callerPhone } = {}
+  {
+    callerPhone,
+    preserveToolHistory = false,
+    allowAppointmentChanges = allowBooking,
+  } = {}
 ) {
   // ==========================================================
   // BASIC VALIDATION
@@ -482,18 +557,42 @@ async function askAI(
       return false;
     }
 
+    // WhatsApp history is kept by the server and may include assistant
+    // tool-call messages plus matching tool results. Preserve these only
+    // for that trusted server-side conversation, never for dashboard input.
+    if (preserveToolHistory) {
+      if (msg.role === "user") {
+        return typeof msg.content === "string" && msg.content.trim().length > 0;
+      }
+
+      if (msg.role === "assistant") {
+        const hasText =
+          typeof msg.content === "string" && msg.content.trim().length > 0;
+        const hasToolCalls =
+          Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+        return hasText || hasToolCalls;
+      }
+
+      if (msg.role === "tool") {
+        return (
+          typeof msg.tool_call_id === "string" &&
+          typeof msg.content === "string"
+        );
+      }
+
+      return false;
+    }
+
+    // Dashboard history is client-provided, so accept only plain text
+    // user/assistant messages and never trust client-supplied tool results.
     if (!["user", "assistant"].includes(msg.role)) {
       return false;
     }
 
-    if (
-      typeof msg.content !== "string" ||
-      !msg.content.trim()
-    ) {
-      return false;
-    }
-
-    return true;
+    return (
+      typeof msg.content === "string" &&
+      msg.content.trim().length > 0
+    );
   });
 
   // ==========================================================
@@ -675,7 +774,9 @@ If multiple appointments exist, ask which one. Never guess.
 BOOKING PERMISSION
 ============================================================
 
-If allowBooking is disabled, do not call book_appointment, cancel_appointment, or reschedule_appointment. You may still look up patients, doctors, availability, and appointments. If a patient tries to book, explain that appointment changes are currently unavailable.
+Booking permission: ${allowBooking ? "ENABLED" : "DISABLED"}.
+Cancellation/rescheduling permission: ${allowAppointmentChanges ? "ENABLED" : "DISABLED"}.
+Never call book_appointment unless booking is enabled. Never call cancel_appointment or reschedule_appointment unless cancellation/rescheduling is enabled. If a requested action is disabled, explain that clearly and do not suggest a workaround that could create an unintended booking.
 
 ============================================================
 TOOL FAILURE
@@ -722,15 +823,7 @@ Email is optional.
   // ==========================================================
 
   while (true) {
-    const response = await client.chat.completions.create({
-      model: "openrouter/free",
-
-      messages,
-
-      tools,
-
-      tool_choice: "auto",
-    });
+    const response = await createChatCompletion(messages, tools);
 
     const assistantMessage = response.choices[0].message;
 
@@ -834,9 +927,14 @@ Email is optional.
         // ====================================================
 
         else if (toolName === "find_patient") {
-          result = await findPatientTool({
-            ...args,
+          // For WhatsApp/voice, the platform-provided caller number is
+          // authoritative. Never let the model substitute another number.
+          const patientLookupArgs = callerPhone
+            ? { phone: callerPhone }
+            : args;
 
+          result = await findPatientTool({
+            ...patientLookupArgs,
             clinicId,
           });
         }
@@ -868,9 +966,14 @@ Email is optional.
         // ====================================================
 
         else if (toolName === "create_patient") {
-          result = await createPatientTool({
-            ...args,
+          // For WhatsApp/voice, always persist the trusted caller number,
+          // not a phone number generated or supplied by the model.
+          const patientCreateArgs = callerPhone
+            ? { ...args, phone: callerPhone }
+            : args;
 
+          result = await createPatientTool({
+            ...patientCreateArgs,
             clinicId,
           });
         }
@@ -882,12 +985,27 @@ Email is optional.
         else if (
           toolName === "find_patient_appointment"
         ) {
-          result =
-            await findPatientAppointmentTool({
-              ...args,
-
+          const appointmentLookupArgs = { ...args };
+          if (callerPhone) {
+            const verifiedPatient = await findPatientTool({
+              phone: callerPhone,
               clinicId,
             });
+            if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+              result = { found: false, message: "Your patient record could not be verified." };
+            } else {
+              appointmentLookupArgs.patientId = verifiedPatient.patient.id;
+              result = await findPatientAppointmentTool({
+                ...appointmentLookupArgs,
+                clinicId,
+              });
+            }
+          } else {
+            result = await findPatientAppointmentTool({
+              ...appointmentLookupArgs,
+              clinicId,
+            });
+          }
         }
 
         // ====================================================
@@ -906,28 +1024,33 @@ Email is optional.
             };
           } else {
             /*
-             * IMPORTANT:
-             *
-             * clinicId MUST be inside the object.
-             *
-             * DO NOT do:
-             *
-             * bookAppointmentTool(args, clinicId)
-             *
-             * because the tool expects:
-             *
-             * bookAppointmentTool({
-             *   ...args,
-             *   clinicId
-             * })
+             * For WhatsApp, derive the patient ID from the verified sender
+             * phone. Never let the model select a different patient record.
              */
+            let bookingArgs = { ...args };
 
-            result =
-              await bookAppointmentTool({
-                ...args,
-
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({
+                phone: callerPhone,
                 clinicId,
               });
+
+              if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+                result = {
+                  success: false,
+                  error: "Your patient record could not be verified. Please contact the hospital.",
+                };
+              } else {
+                bookingArgs.patientId = verifiedPatient.patient.id;
+              }
+            }
+
+            if (!result) {
+              result = await bookAppointmentTool({
+                ...bookingArgs,
+                clinicId,
+              });
+            }
           }
         }
 
@@ -938,7 +1061,7 @@ Email is optional.
         else if (
           toolName === "cancel_appointment"
         ) {
-          if (!allowBooking) {
+          if (!allowAppointmentChanges) {
             result = {
               success: false,
 
@@ -946,12 +1069,22 @@ Email is optional.
                 "Appointment cancellation is currently disabled.",
             };
           } else {
-            result =
-              await cancelAppointmentTool({
-                ...args,
+            let canCancel = true;
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
+              const ownedAppointment = verifiedPatient?.patient?.id
+                ? await findPatientAppointmentTool({
+                    clinicId,
+                    patientId: verifiedPatient.patient.id,
+                    appointmentId: args.appointmentId,
+                  })
+                : { found: false };
+              canCancel = Boolean(ownedAppointment?.found);
+            }
 
-                clinicId,
-              });
+            result = canCancel
+              ? await cancelAppointmentTool({ ...args, clinicId })
+              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
           }
         }
 
@@ -962,7 +1095,7 @@ Email is optional.
         else if (
           toolName === "reschedule_appointment"
         ) {
-          if (!allowBooking) {
+          if (!allowAppointmentChanges) {
             result = {
               success: false,
 
@@ -970,12 +1103,22 @@ Email is optional.
                 "Appointment rescheduling is currently disabled.",
             };
           } else {
-            result =
-              await rescheduleAppointmentTool({
-                ...args,
+            let canReschedule = true;
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
+              const ownedAppointment = verifiedPatient?.patient?.id
+                ? await findPatientAppointmentTool({
+                    clinicId,
+                    patientId: verifiedPatient.patient.id,
+                    appointmentId: args.appointmentId,
+                  })
+                : { found: false };
+              canReschedule = Boolean(ownedAppointment?.found);
+            }
 
-                clinicId,
-              });
+            result = canReschedule
+              ? await rescheduleAppointmentTool({ ...args, clinicId })
+              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
           }
         }
 

@@ -115,9 +115,13 @@ const handleIncomingWebhook = async (payload) => {
           const reply = await askAI(
             userMessage,
             history,
-            false,
+            true,
             DEMO_CLINIC_ID,
-            { callerPhone: sender }
+            {
+              callerPhone: sender,
+              preserveToolHistory: true,
+              allowAppointmentChanges: true,
+            }
           );
 
          const assistantMessage =
@@ -128,13 +132,15 @@ const handleIncomingWebhook = async (payload) => {
             throw new Error("AI returned no readable reply.");
           }
 
-          history.push(
-            { role: "user", content: userMessage },
-            { role: "assistant", content: assistantMessage }
-          );
+          // Persist the full server-generated tool-call/tool-result history.
+          // This lets later turns reuse real patient/doctor IDs returned by
+          // tools instead of asking the model to recreate or guess those IDs.
+          const updatedHistory = [
+            ...(reply.messages ?? []).filter((item) => item.role !== "system"),
+            { role: "assistant", content: assistantMessage },
+          ];
 
-          // Keep only the latest 10 conversation messages.
-          conversations.set(sender, history.slice(-10));
+          conversations.set(sender, updatedHistory);
 
           await sendWhatsAppText(sender, assistantMessage);
         } catch (error) {

@@ -40,39 +40,61 @@ function generateSlots() {
   return slots;
 }
 
+// Hospital operates in India Standard Time, regardless of server timezone.
+function getIndiaDateTimeParts() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  return Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+}
+
+function validateSlotIsNotInPast(appointmentDate, startTime) {
+  const now = getIndiaDateTimeParts();
+  const today = `${now.year}-${now.month}-${now.day}`;
+  if (appointmentDate < today) {
+    throw new Error("Appointments cannot be booked for a past date");
+  }
+  if (appointmentDate === today) {
+    const currentMinutes = Number(now.hour) * 60 + Number(now.minute);
+    const [hour, minute] = startTime.split(":").map(Number);
+    if (hour * 60 + minute <= currentMinutes) {
+      throw new Error("This time has already passed. Please choose a future slot.");
+    }
+  }
+}
+
 // --------------------------------------------------
 // DATE VALIDATION
 // --------------------------------------------------
 
 function validateAppointmentDate(appointmentDate) {
-  const requestedDate = new Date(
-    `${appointmentDate}T00:00:00.000Z`
-  );
+  if (typeof appointmentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(appointmentDate)) {
+    throw new Error("Invalid appointment date. Use YYYY-MM-DD.");
+  }
 
-  if (isNaN(requestedDate.getTime())) {
+  const requestedDate = new Date(`${appointmentDate}T00:00:00.000Z`);
+  if (isNaN(requestedDate.getTime()) || requestedDate.toISOString().slice(0, 10) !== appointmentDate) {
     throw new Error("Invalid appointment date");
   }
 
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-
+  const now = getIndiaDateTimeParts();
+  const todayString = `${now.year}-${now.month}-${now.day}`;
+  const today = new Date(`${todayString}T00:00:00.000Z`);
   const maxDate = new Date(today);
   maxDate.setUTCDate(maxDate.getUTCDate() + 7);
 
-  // Past date
-  if (requestedDate < today) {
-    throw new Error(
-      "Appointments cannot be booked for a past date"
-    );
+  if (appointmentDate < todayString) {
+    throw new Error("Appointments cannot be booked for a past date");
   }
-
-  // More than 7 days ahead
   if (requestedDate > maxDate) {
-    throw new Error(
-      "Appointments can only be booked up to 7 days ahead"
-    );
+    throw new Error("Appointments can only be booked up to 7 days ahead");
   }
-
   return requestedDate;
 }
 
@@ -84,7 +106,8 @@ async function checkAvailability(
   doctorId,
   appointmentDate,
   startTime,
-  clinicId
+  clinicId,
+  excludeAppointmentId = null
 ) {
   // Make sure doctor belongs to current clinic
   const doctor = await prisma.doctor.findFirst({
@@ -124,7 +147,7 @@ async function checkAvailability(
     };
   }
 
-  // Validate time
+  // Validate time and reject slots that have already passed in India time.
   const allSlots = generateSlots();
 
   if (!allSlots.includes(startTime)) {
@@ -135,6 +158,12 @@ async function checkAvailability(
     };
   }
 
+  try {
+    validateSlotIsNotInPast(appointmentDate, startTime);
+  } catch (error) {
+    return { available: false, message: error.message, alternatives: [] };
+  }
+
   // Get booked appointments for this clinic + doctor
   const bookedAppointments =
     await prisma.appointment.findMany({
@@ -143,6 +172,7 @@ async function checkAvailability(
         doctorId: Number(doctorId),
         appointmentDate: date,
         status: "BOOKED",
+        ...(excludeAppointmentId ? { id: { not: Number(excludeAppointmentId) } } : {}),
       },
       select: {
         startTime: true,
@@ -175,18 +205,30 @@ async function checkAvailability(
     const beforeIndex = requestedIndex - distance;
     const afterIndex = requestedIndex + distance;
 
-    if (
-      beforeIndex >= 0 &&
-      !bookedTimes.includes(allSlots[beforeIndex])
-    ) {
-      alternatives.push(allSlots[beforeIndex]);
+    if (beforeIndex >= 0) {
+      const candidate = allSlots[beforeIndex];
+      let candidateIsFuture = true;
+      try {
+        validateSlotIsNotInPast(appointmentDate, candidate);
+      } catch {
+        candidateIsFuture = false;
+      }
+      if (candidateIsFuture && !bookedTimes.includes(candidate)) {
+        alternatives.push(candidate);
+      }
     }
 
-    if (
-      afterIndex < allSlots.length &&
-      !bookedTimes.includes(allSlots[afterIndex])
-    ) {
-      alternatives.push(allSlots[afterIndex]);
+    if (afterIndex < allSlots.length) {
+      const candidate = allSlots[afterIndex];
+      let candidateIsFuture = true;
+      try {
+        validateSlotIsNotInPast(appointmentDate, candidate);
+      } catch {
+        candidateIsFuture = false;
+      }
+      if (candidateIsFuture && !bookedTimes.includes(candidate)) {
+        alternatives.push(candidate);
+      }
     }
 
     if (alternatives.length >= 2) {
@@ -253,6 +295,7 @@ async function createAppointment({
   if (!allSlots.includes(startTime)) {
     throw new Error("Invalid appointment time");
   }
+  validateSlotIsNotInPast(appointmentDate, startTime);
 
   // Check patient belongs to clinic
   const patient = await prisma.patient.findFirst({
@@ -406,7 +449,8 @@ async function rescheduleAppointment(
       appointment.doctorId,
       newDate,
       newTime,
-      clinicId
+      clinicId,
+      Number(appointmentId)
     );
 
   if (!availability.available) {
@@ -446,12 +490,17 @@ async function findPatientAppointment({
   doctorId,
   appointmentDate,
   startTime,
+  appointmentId,
 }) {
   const where = {
     clinicId: Number(clinicId),
     patientId: Number(patientId),
     status: "BOOKED",
   };
+
+  if (appointmentId) {
+    where.id = Number(appointmentId);
+  }
 
   if (doctorId) {
     where.doctorId = Number(doctorId);

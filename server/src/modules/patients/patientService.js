@@ -1,17 +1,28 @@
 const prisma = require("../../db");
 
 async function findPatient(clinicId, name, phone) {
-  const patient = await prisma.patient.findFirst({
+  // A trusted phone number is the strongest identifier. Do not fall back
+  // to a matching name when a supplied phone number has no match, because
+  // that could identify a different person.
+  if (phone) {
+    return prisma.patient.findFirst({
+      where: {
+        clinicId: Number(clinicId),
+        phone,
+      },
+    });
+  }
+
+  if (!name) return null;
+
+  // Name-only lookup is used by dashboard chat; use an exact name match
+  // within this clinic and let the assistant clarify if needed.
+  return prisma.patient.findFirst({
     where: {
-      clinicId,
-      OR: [
-        name ? { name: { equals: name, mode: "insensitive" } } : undefined,
-        phone ? { phone } : undefined,
-      ].filter(Boolean),
+      clinicId: Number(clinicId),
+      name: { equals: name.trim(), mode: "insensitive" },
     },
   });
-
-  return patient;
 }
 
 async function createPatient(clinicId, { name, phone, email }) {
