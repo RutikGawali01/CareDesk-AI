@@ -91,6 +91,7 @@ async function findPatientAppointmentTool({
   doctorId,
   appointmentDate,
   startTime,
+  appointmentId,
 }) {
   return await findPatientAppointment({
     clinicId,
@@ -98,6 +99,7 @@ async function findPatientAppointmentTool({
     doctorId,
     appointmentDate,
     startTime,
+    appointmentId,
   });
 }
 
