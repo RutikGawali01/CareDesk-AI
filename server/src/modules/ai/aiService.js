@@ -446,7 +446,11 @@ async function askAI(
   previousMessages = [],
   allowBooking = false,
   clinicId,
-  { callerPhone, preserveToolHistory = false } = {}
+  {
+    callerPhone,
+    preserveToolHistory = false,
+    allowAppointmentChanges = false,
+  } = {}
 ) {
   // ==========================================================
   // BASIC VALIDATION
@@ -699,7 +703,7 @@ If multiple appointments exist, ask which one. Never guess.
 BOOKING PERMISSION
 ============================================================
 
-If allowBooking is disabled, do not call book_appointment, cancel_appointment, or reschedule_appointment. You may still look up patients, doctors, availability, and appointments. If a patient tries to book, explain that appointment changes are currently unavailable.
+If allowBooking is disabled, do not call book_appointment. If allowAppointmentChanges is disabled, do not call cancel_appointment or reschedule_appointment. You may still look up patients, doctors, availability, and appointments. Explain clearly when a requested action is unavailable.
 
 ============================================================
 TOOL FAILURE
@@ -940,28 +944,33 @@ Email is optional.
             };
           } else {
             /*
-             * IMPORTANT:
-             *
-             * clinicId MUST be inside the object.
-             *
-             * DO NOT do:
-             *
-             * bookAppointmentTool(args, clinicId)
-             *
-             * because the tool expects:
-             *
-             * bookAppointmentTool({
-             *   ...args,
-             *   clinicId
-             * })
+             * For WhatsApp, derive the patient ID from the verified sender
+             * phone. Never let the model select a different patient record.
              */
+            let bookingArgs = { ...args };
 
-            result =
-              await bookAppointmentTool({
-                ...args,
-
+            if (callerPhone) {
+              const verifiedPatient = await findPatientTool({
+                phone: callerPhone,
                 clinicId,
               });
+
+              if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+                result = {
+                  success: false,
+                  error: "Your patient record could not be verified. Please contact the hospital.",
+                };
+              } else {
+                bookingArgs.patientId = verifiedPatient.patient.id;
+              }
+            }
+
+            if (!result) {
+              result = await bookAppointmentTool({
+                ...bookingArgs,
+                clinicId,
+              });
+            }
           }
         }
 
@@ -972,7 +981,7 @@ Email is optional.
         else if (
           toolName === "cancel_appointment"
         ) {
-          if (!allowBooking) {
+          if (!allowAppointmentChanges) {
             result = {
               success: false,
 
@@ -996,7 +1005,7 @@ Email is optional.
         else if (
           toolName === "reschedule_appointment"
         ) {
-          if (!allowBooking) {
+          if (!allowAppointmentChanges) {
             result = {
               success: false,
 
