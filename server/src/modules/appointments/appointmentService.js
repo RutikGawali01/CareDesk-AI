@@ -478,12 +478,17 @@ async function findPatientAppointment({
   doctorId,
   appointmentDate,
   startTime,
+  appointmentId,
 }) {
   const where = {
     clinicId: Number(clinicId),
     patientId: Number(patientId),
     status: "BOOKED",
   };
+
+  if (appointmentId) {
+    where.id = Number(appointmentId);
+  }
 
   if (doctorId) {
     where.doctorId = Number(doctorId);
