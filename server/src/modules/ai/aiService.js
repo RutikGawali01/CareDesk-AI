@@ -449,7 +449,7 @@ async function askAI(
   {
     callerPhone,
     preserveToolHistory = false,
-    allowAppointmentChanges = false,
+    allowAppointmentChanges = allowBooking,
   } = {}
 ) {
   // ==========================================================
