@@ -115,7 +115,7 @@ const handleIncomingWebhook = async (payload) => {
           const reply = await askAI(
             userMessage,
             history,
-            false,
+            true,
             DEMO_CLINIC_ID,
             {
               callerPhone: sender,
