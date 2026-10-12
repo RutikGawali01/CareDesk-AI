@@ -120,7 +120,7 @@ const handleIncomingWebhook = async (payload) => {
             {
               callerPhone: sender,
               preserveToolHistory: true,
-              allowAppointmentChanges: false,
+              allowAppointmentChanges: true,
             }
           );
 
