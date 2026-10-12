@@ -74,7 +74,7 @@ function validateSlotIsNotInPast(appointmentDate, startTime) {
 // --------------------------------------------------
 
 function validateAppointmentDate(appointmentDate) {
-  if (typeof appointmentDate !== "string" || !/^\\d{4}-\\d{2}-\\d{2}$/.test(appointmentDate)) {
+  if (typeof appointmentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(appointmentDate)) {
     throw new Error("Invalid appointment date. Use YYYY-MM-DD.");
   }
 
