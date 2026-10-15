@@ -150,10 +150,10 @@ const handleIncomingWebhook = async (payload) => {
             }
           );
 
-         const assistantMessage =
-  typeof reply === "string"
-    ? reply
-    : reply?.response;
+          const assistantMessage =
+            typeof reply === "string"
+              ? reply
+              : reply?.response;
           if (!assistantMessage) {
             throw new Error("AI returned no readable reply.");
           }
