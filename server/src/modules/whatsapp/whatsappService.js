@@ -20,9 +20,18 @@
 require("dotenv").config();
 
 const { askAI } = require("../ai/aiService");
+const prisma = require("../../db");
 
-const DEMO_CLINIC_ID = 1;
-const DEMO_PHONE_NUMBER_ID = "1417503314772648";
+function getClinicIdForPhoneNumber(phoneNumberId) {
+  try {
+    const mapping = JSON.parse(process.env.WHATSAPP_CLINIC_MAP || "{}");
+    const clinicId = Number(mapping[phoneNumberId]);
+    return Number.isInteger(clinicId) && clinicId > 0 ? clinicId : null;
+  } catch {
+    console.error("[WhatsApp] WHATSAPP_CLINIC_MAP must be valid JSON.");
+    return null;
+  }
+}
 
 // Temporary conversation history for local testing.
 // Messages are lost when the server restarts.
@@ -90,16 +99,17 @@ const handleIncomingWebhook = async (payload) => {
 
       const value = change.value ?? {};
 
-      // Only process messages received by our configured demo number.
-      if (
-        value.metadata?.phone_number_id !== DEMO_PHONE_NUMBER_ID
-      ) {
-        console.warn("[WhatsApp] Ignoring an unrecognized number.");
+      // Resolve the tenant from trusted server-side configuration.
+      const phoneNumberId = value.metadata?.phone_number_id;
+      const clinicId = getClinicIdForPhoneNumber(phoneNumberId);
+
+      if (!clinicId) {
+        console.warn("[WhatsApp] Ignoring an unconfigured phone number ID.");
         continue;
       }
 
       for (const message of value.messages ?? []) {
-        if (message.type !== "text" || !message.from) continue;
+        if (message.type !== "text" || !message.from || !message.id) continue;
 
         const sender = message.from;
         const userMessage = message.text?.body?.trim();
@@ -108,19 +118,33 @@ const handleIncomingWebhook = async (payload) => {
 
         console.log(`[WhatsApp] Incoming text from ${sender}`);
 
+        // Claim each Meta message ID once. The database primary key prevents
+        // duplicate processing across retries, restarts, and server instances.
+        try {
+          await prisma.whatsAppProcessedMessage.create({
+            data: { messageId: message.id, status: "PROCESSING" },
+          });
+        } catch (error) {
+          if (error?.code === "P2002") {
+            console.log("[WhatsApp] Ignoring duplicate message ID.");
+            continue;
+          }
+          throw error;
+        }
+
         const history = conversations.get(sender) ?? [];
 
         try {
-          // Booking remains disabled during the first AI test.
           const reply = await askAI(
             userMessage,
             history,
-            true,
-            DEMO_CLINIC_ID,
+            process.env.AI_BOOKING_ENABLED === "true",
+            clinicId,
             {
               callerPhone: sender,
               preserveToolHistory: true,
-              allowAppointmentChanges: true,
+              allowAppointmentChanges:
+                process.env.AI_APPOINTMENT_CHANGES_ENABLED === "true",
             }
           );
 
@@ -143,8 +167,17 @@ const handleIncomingWebhook = async (payload) => {
           conversations.set(sender, updatedHistory);
 
           await sendWhatsAppText(sender, assistantMessage);
+          await prisma.whatsAppProcessedMessage.update({
+            where: { messageId: message.id },
+            data: { status: "PROCESSED" },
+          });
         } catch (error) {
           console.error("[WhatsApp] AI processing failed:", error.message);
+
+          // Remove failed claims so a genuine Meta retry can be processed.
+          await prisma.whatsAppProcessedMessage.deleteMany({
+            where: { messageId: message.id, status: "PROCESSING" },
+          });
 
           await sendWhatsAppText(
             sender,
