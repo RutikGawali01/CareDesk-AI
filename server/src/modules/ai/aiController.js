@@ -2,11 +2,7 @@ const { askAI } = require("./aiService");
 
 async function chatWithAI(req, res) {
   try {
-    const {
-      message,
-      previousMessages,
-      allowBooking = true,
-    } = req.body;
+    const { message, previousMessages } = req.body;
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({
@@ -15,9 +11,12 @@ async function chatWithAI(req, res) {
       });
     }
 
+    // The server, not the browser, decides whether AI booking is enabled.
+    const allowBooking = process.env.AI_BOOKING_ENABLED === "true";
+
     const result = await askAI(
       message,
-      previousMessages || [],
+      Array.isArray(previousMessages) ? previousMessages : [],
       allowBooking,
       req.clinicId
     );
