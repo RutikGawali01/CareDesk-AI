@@ -36,7 +36,8 @@ async function checkAvailabilityController(req, res) {
     const result = await checkAvailability(
       Number(doctorId),
       appointmentDate,
-      startTime
+      startTime,
+      req.clinicId
     );
 
     return res.json({
@@ -161,7 +162,10 @@ async function createAppointmentController(req, res) {
       });
     }
 
-    if (error.message === "This appointment slot is already booked") {
+    if (
+      error.message === "This appointment slot is already booked" ||
+      error.code === "P2002"
+    ) {
       return res.status(409).json({
         success: false,
         message: error.message,
@@ -201,7 +205,7 @@ async function cancelAppointmentController(req, res) {
       });
     }
 
-    const appointment = await cancelAppointment(appointmentId);
+    const appointment = await cancelAppointment(appointmentId, req.clinicId);
 
     return res.json({
       success: true,
@@ -270,7 +274,8 @@ async function rescheduleAppointmentController(req, res) {
     const appointment = await rescheduleAppointment(
       appointmentId,
       newDate,
-      newTime
+      newTime,
+      req.clinicId
     );
 
     return res.json({
