@@ -80,6 +80,13 @@ model DoctorSchedule {
   @@unique([doctorId, dayOfWeek, startTime])
 }
 
+model WhatsAppProcessedMessage {
+  messageId String   @id
+  status    String   @default("PROCESSING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Appointment {
   id              Int      @id @default(autoincrement())
   clinicId        Int
