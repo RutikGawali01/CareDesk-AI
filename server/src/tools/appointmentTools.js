@@ -63,16 +63,19 @@ async function bookAppointmentTool({
 
 async function cancelAppointmentTool({
   clinicId,
+  patientId,
   appointmentId,
 }) {
   return await cancelAppointment(
     appointmentId,
-    clinicId
+    clinicId,
+    patientId
   );
 }
 
 async function rescheduleAppointmentTool({
   clinicId,
+  patientId,
   appointmentId,
   newDate,
   newTime,
@@ -81,7 +84,8 @@ async function rescheduleAppointmentTool({
     appointmentId,
     newDate,
     newTime,
-    clinicId
+    clinicId,
+    patientId
   );
 }
 
