@@ -49,9 +49,8 @@ const verifyWebhook = (mode, token, challenge) => {
   return { status: 403, body: "Forbidden" };
 };
 
-const sendWhatsAppText = async (to, message) => {
+const sendWhatsAppText = async (to, message, phoneNumberId) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
   if (!accessToken || !phoneNumberId) {
     console.error("[WhatsApp] Missing API credentials.");
@@ -132,7 +131,10 @@ const handleIncomingWebhook = async (payload) => {
           throw error;
         }
 
-        const history = conversations.get(sender) ?? [];
+        // Scope conversation history to both tenant and sender. A patient
+        // messaging two hospital numbers must never share context across clinics.
+        const conversationKey = `${clinicId}:${sender}`;
+        const history = conversations.get(conversationKey) ?? [];
 
         try {
           const reply = await askAI(
@@ -164,24 +166,34 @@ const handleIncomingWebhook = async (payload) => {
             { role: "assistant", content: assistantMessage },
           ];
 
-          conversations.set(sender, updatedHistory);
+          conversations.set(conversationKey, updatedHistory);
 
-          await sendWhatsAppText(sender, assistantMessage);
+          // Mark the event processed before sending the reply. If delivery fails,
+          // Meta retries must not repeat a booking/cancellation side effect.
           await prisma.whatsAppProcessedMessage.update({
             where: { messageId: message.id },
             data: { status: "PROCESSED" },
           });
+          await sendWhatsAppText(sender, assistantMessage, phoneNumberId);
         } catch (error) {
           console.error("[WhatsApp] AI processing failed:", error.message);
 
-          // Remove failed claims so a genuine Meta retry can be processed.
-          await prisma.whatsAppProcessedMessage.deleteMany({
-            where: { messageId: message.id, status: "PROCESSING" },
-          });
+          // Do not release the deduplication claim after an AI/tool failure:
+          // the tool may already have changed an appointment before a later
+          // step failed. Replaying could repeat a consequential action.
+          try {
+            await prisma.whatsAppProcessedMessage.update({
+              where: { messageId: message.id },
+              data: { status: "FAILED" },
+            });
+          } catch (statusError) {
+            console.error("[WhatsApp] Could not mark message failed:", statusError.message);
+          }
 
           await sendWhatsAppText(
             sender,
-            "Sorry, I'm having trouble responding right now. Please try again shortly."
+            "Sorry, I'm having trouble responding right now. Please try again shortly.",
+            phoneNumberId
           );
         }
       }
