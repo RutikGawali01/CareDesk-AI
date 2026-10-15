@@ -1070,21 +1070,38 @@ Email is optional.
             };
           } else {
             let canCancel = true;
+            let verifiedPatientId;
+
             if (callerPhone) {
-              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
-              const ownedAppointment = verifiedPatient?.patient?.id
+              const verifiedPatient = await findPatientTool({
+                phone: callerPhone,
+                clinicId,
+              });
+              verifiedPatientId = verifiedPatient?.found
+                ? verifiedPatient?.patient?.id
+                : undefined;
+
+              const ownedAppointment = verifiedPatientId
                 ? await findPatientAppointmentTool({
                     clinicId,
-                    patientId: verifiedPatient.patient.id,
+                    patientId: verifiedPatientId,
                     appointmentId: args.appointmentId,
                   })
                 : { found: false };
+
               canCancel = Boolean(ownedAppointment?.found);
             }
 
             result = canCancel
-              ? await cancelAppointmentTool({ ...args, clinicId })
-              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
+              ? await cancelAppointmentTool({
+                  ...args,
+                  clinicId,
+                  ...(callerPhone ? { patientId: verifiedPatientId } : {}),
+                })
+              : {
+                  success: false,
+                  error: "That appointment could not be verified for your WhatsApp number.",
+                };
           }
         }
 
@@ -1104,21 +1121,38 @@ Email is optional.
             };
           } else {
             let canReschedule = true;
+            let verifiedPatientId;
+
             if (callerPhone) {
-              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
-              const ownedAppointment = verifiedPatient?.patient?.id
+              const verifiedPatient = await findPatientTool({
+                phone: callerPhone,
+                clinicId,
+              });
+              verifiedPatientId = verifiedPatient?.found
+                ? verifiedPatient?.patient?.id
+                : undefined;
+
+              const ownedAppointment = verifiedPatientId
                 ? await findPatientAppointmentTool({
                     clinicId,
-                    patientId: verifiedPatient.patient.id,
+                    patientId: verifiedPatientId,
                     appointmentId: args.appointmentId,
                   })
                 : { found: false };
+
               canReschedule = Boolean(ownedAppointment?.found);
             }
 
             result = canReschedule
-              ? await rescheduleAppointmentTool({ ...args, clinicId })
-              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
+              ? await rescheduleAppointmentTool({
+                  ...args,
+                  clinicId,
+                  ...(callerPhone ? { patientId: verifiedPatientId } : {}),
+                })
+              : {
+                  success: false,
+                  error: "That appointment could not be verified for your WhatsApp number.",
+                };
           }
         }
 
