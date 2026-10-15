@@ -380,13 +380,15 @@ async function createAppointment({
 
 async function cancelAppointment(
   appointmentId,
-  clinicId
+  clinicId,
+  patientId = null
 ) {
   const appointment =
     await prisma.appointment.findFirst({
       where: {
         id: Number(appointmentId),
         clinicId: Number(clinicId),
+        ...(patientId !== null && { patientId: Number(patientId) }),
       },
     });
 
@@ -421,13 +423,15 @@ async function rescheduleAppointment(
   appointmentId,
   newDate,
   newTime,
-  clinicId
+  clinicId,
+  patientId = null
 ) {
   const appointment =
     await prisma.appointment.findFirst({
       where: {
         id: Number(appointmentId),
         clinicId: Number(clinicId),
+        ...(patientId !== null && { patientId: Number(patientId) }),
       },
     });
 
