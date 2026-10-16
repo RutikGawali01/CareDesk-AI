@@ -1,4 +1,4 @@
-const prisma = require("../../db");
+function getPrisma() { return require("../../db"); }
 
 const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 const AFFIRMATIVE_CONFIRMATION = /^(yes|yes please|confirm|confirmed|book it|go ahead|proceed|cancel it|reschedule it|that's correct|that is correct)[.!\s]*$/i;
@@ -20,7 +20,7 @@ async function createPendingConfirmation({ actorKey, clinicId, patientId = null,
     throw new Error("Unsupported appointment action.");
   }
   const now = new Date();
-  return prisma.appointmentConfirmation.upsert({
+  return getPrisma().appointmentConfirmation.upsert({
     where: { actorKey },
     create: {
       actorKey,
@@ -43,12 +43,12 @@ async function createPendingConfirmation({ actorKey, clinicId, patientId = null,
 }
 
 async function getPendingConfirmation(actorKey) {
-  const pending = await prisma.appointmentConfirmation.findUnique({
+  const pending = await getPrisma().appointmentConfirmation.findUnique({
     where: { actorKey },
   });
   if (!pending || pending.status !== "PENDING") return null;
   if (pending.expiresAt <= new Date()) {
-    await prisma.appointmentConfirmation.updateMany({
+    await getPrisma().appointmentConfirmation.updateMany({
       where: { id: pending.id, status: "PENDING" },
       data: { status: "EXPIRED" },
     });
