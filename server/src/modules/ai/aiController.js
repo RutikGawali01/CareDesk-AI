@@ -18,7 +18,12 @@ async function chatWithAI(req, res) {
       message,
       Array.isArray(previousMessages) ? previousMessages : [],
       allowBooking,
-      req.clinicId
+      req.clinicId,
+      {
+        adminId: req.adminId,
+        allowAppointmentChanges:
+          process.env.AI_APPOINTMENT_CHANGES_ENABLED === "true",
+      }
     );
 
     res.json({
