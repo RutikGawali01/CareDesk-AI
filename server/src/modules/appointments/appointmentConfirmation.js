@@ -59,7 +59,7 @@ async function getPendingConfirmation(actorKey) {
 
 // Atomic one-time claim. Only one concurrent confirmation request can win.
 async function consumePendingConfirmation(id, actorKey) {
-  const claimed = await prisma.appointmentConfirmation.updateMany({
+  const claimed = await getPrisma().appointmentConfirmation.updateMany({
     where: {
       id,
       actorKey,
