@@ -535,6 +535,9 @@ async function askAI(
     adminId,
     preserveToolHistory = false,
     allowAppointmentChanges = allowBooking,
+    db = getPrisma(),
+    chatCompletionFn = createChatCompletion,
+    confirmationServices = {},
   } = {}
 ) {
   // ==========================================================
@@ -565,12 +568,25 @@ async function askAI(
   // ==========================================================
   // SERVER-SIDE CONFIRMATION EXECUTION
   // ==========================================================
-  // Only a standalone explicit confirmation executes the pending mutation,
-  // using the saved payload—never model-generated arguments from confirmation.
-  if (actorKey && isExplicitConfirmation(message)) {
-    const pending = await getPendingConfirmation(actorKey);
+  // A standalone explicit confirmation is handled strictly server-side.
+  // It MUST NOT continue into the LLM/tool loop under any circumstances.
+  if (isExplicitConfirmation(message)) {
+    if (!actorKey) {
+      const reply =
+        "A trusted confirmation identity is required to confirm appointments. Please authenticate or contact the hospital.";
+      return {
+        response: reply,
+        messages: [
+          ...previousMessages,
+          { role: "user", content: message },
+          { role: "assistant", content: reply },
+        ],
+      };
+    }
+
+    const pending = await getPendingConfirmation(actorKey, db);
     if (pending) {
-      const claimed = await consumePendingConfirmation(pending.id, actorKey);
+      const claimed = await consumePendingConfirmation(pending.id, actorKey, db);
       if (!claimed) {
         const reply =
           "This confirmation request has already been processed or expired. Please let me know what you would like to do.";
@@ -586,12 +602,16 @@ async function askAI(
 
       let patientId = pending.patientId;
       if (callerPhone) {
-        const verifiedPatient = await findPatientTool({
-          phone: callerPhone,
-          clinicId,
-        });
-        if (verifiedPatient?.found && verifiedPatient?.patient?.id) {
-          patientId = verifiedPatient.patient.id;
+        try {
+          const verifiedPatient = await findPatientTool({
+            phone: callerPhone,
+            clinicId,
+          });
+          if (verifiedPatient?.found && verifiedPatient?.patient?.id) {
+            patientId = verifiedPatient.patient.id;
+          }
+        } catch {
+          // If patient lookup tool throws (e.g. offline mock db), keep pending.patientId
         }
       }
 
@@ -601,6 +621,7 @@ async function askAI(
         patientId,
         allowBooking,
         allowAppointmentChanges,
+        services: confirmationServices,
       });
 
       return {
@@ -614,7 +635,7 @@ async function askAI(
     } else {
       // Check if there was an expired or consumed record to give immediate clear feedback
       try {
-        const recent = await getPrisma().appointmentConfirmation.findUnique({
+        const recent = await db.appointmentConfirmation.findUnique({
           where: { actorKey },
         });
         if (recent && recent.status === "CONSUMED") {
@@ -640,9 +661,22 @@ async function askAI(
             ],
           };
         }
-      } catch {
-        // Fall through to normal conversational processing
+      } catch (err) {
+        console.error("[AI] Error querying recent confirmation status:", err?.message);
       }
+
+      // Standalone confirmation with no active, consumed, or expired pending record.
+      // Return a clean response and NEVER fall through into the LLM/tool loop.
+      const reply =
+        "There is no pending appointment awaiting confirmation. How can I help you today?";
+      return {
+        response: reply,
+        messages: [
+          ...previousMessages,
+          { role: "user", content: message },
+          { role: "assistant", content: reply },
+        ],
+      };
     }
   }
 
@@ -934,7 +968,7 @@ Email is optional.
   let stagedConfirmationInTurn = false;
 
   while (true) {
-    const response = await createChatCompletion(messages, tools);
+    const response = await chatCompletionFn(messages, tools);
 
     const assistantMessage = response.choices[0].message;
 
@@ -946,12 +980,16 @@ Email is optional.
     // ========================================================
 
     if (!assistantMessage.tool_calls?.length) {
-      return {
-        response:
-          assistantMessage.content ||
-          "I'm sorry, I couldn't generate a response.",
+      const finalReply =
+        assistantMessage.content ||
+        "I'm sorry, I couldn't generate a response.";
 
-        messages,
+      return {
+        response: finalReply,
+        messages: [
+          ...messages,
+          { role: "assistant", content: finalReply },
+        ],
       };
     }
 
@@ -1159,7 +1197,7 @@ Email is optional.
                 bookingPatientName = verifiedPatient.patient.name;
               }
             } else if (args.patientId) {
-              const patient = await getPrisma().patient.findFirst({
+              const patient = await db.patient.findFirst({
                 where: {
                   id: Number(args.patientId),
                   clinicId: Number(clinicId),
@@ -1182,7 +1220,7 @@ Email is optional.
             }
 
             if (!result) {
-              const doctor = await getPrisma().doctor.findFirst({
+              const doctor = await db.doctor.findFirst({
                 where: {
                   id: Number(args.doctorId),
                   clinicId: Number(clinicId),
@@ -1222,13 +1260,16 @@ Email is optional.
                     reason: args.reason || null,
                   };
 
-                  await createPendingConfirmation({
-                    actorKey,
-                    clinicId: Number(clinicId),
-                    patientId: Number(bookingPatientId),
-                    actionType: "BOOK",
-                    payload,
-                  });
+                  await createPendingConfirmation(
+                    {
+                      actorKey,
+                      clinicId: Number(clinicId),
+                      patientId: Number(bookingPatientId),
+                      actionType: "BOOK",
+                      payload,
+                    },
+                    db
+                  );
 
                   stagedConfirmationInTurn = true;
 
@@ -1291,7 +1332,7 @@ Email is optional.
             }
 
             if (!result) {
-              const appointment = await getPrisma().appointment.findFirst({
+              const appointment = await db.appointment.findFirst({
                 where: {
                   id: Number(args.appointmentId),
                   clinicId: Number(clinicId),
@@ -1322,13 +1363,16 @@ Email is optional.
                   startTime: appointment.startTime,
                 };
 
-                await createPendingConfirmation({
-                  actorKey,
-                  clinicId: Number(clinicId),
-                  patientId: Number(appointment.patientId),
-                  actionType: "CANCEL",
-                  payload,
-                });
+                await createPendingConfirmation(
+                  {
+                    actorKey,
+                    clinicId: Number(clinicId),
+                    patientId: Number(appointment.patientId),
+                    actionType: "CANCEL",
+                    payload,
+                  },
+                  db
+                );
 
                 stagedConfirmationInTurn = true;
 
@@ -1385,7 +1429,7 @@ Email is optional.
             }
 
             if (!result) {
-              const appointment = await getPrisma().appointment.findFirst({
+              const appointment = await db.appointment.findFirst({
                 where: {
                   id: Number(args.appointmentId),
                   clinicId: Number(clinicId),
@@ -1429,13 +1473,16 @@ Email is optional.
                     newTime: args.newTime,
                   };
 
-                  await createPendingConfirmation({
-                    actorKey,
-                    clinicId: Number(clinicId),
-                    patientId: Number(appointment.patientId),
-                    actionType: "RESCHEDULE",
-                    payload,
-                  });
+                  await createPendingConfirmation(
+                    {
+                      actorKey,
+                      clinicId: Number(clinicId),
+                      patientId: Number(appointment.patientId),
+                      actionType: "RESCHEDULE",
+                      payload,
+                    },
+                    db
+                  );
 
                   stagedConfirmationInTurn = true;
 

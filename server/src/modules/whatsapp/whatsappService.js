@@ -37,6 +37,32 @@ function getClinicIdForPhoneNumber(phoneNumberId) {
 // Messages are lost when the server restarts.
 const conversations = new Map();
 
+// Per-conversation queue ensures sequential processing of messages from the same sender.
+// Overlapping webhook deliveries cannot interleave or read stale conversation history.
+const conversationQueues = new Map();
+
+function enqueueConversation(conversationKey, task) {
+  const previous = conversationQueues.get(conversationKey) || Promise.resolve();
+  const next = previous
+    .catch((err) => {
+      console.error(
+        `[WhatsApp] Error in previous task for ${conversationKey}:`,
+        err?.message
+      );
+    })
+    .then(task);
+
+  conversationQueues.set(conversationKey, next);
+
+  next.finally(() => {
+    if (conversationQueues.get(conversationKey) === next) {
+      conversationQueues.delete(conversationKey);
+    }
+  });
+
+  return next;
+}
+
 const verifyWebhook = (mode, token, challenge) => {
   if (
     mode === "subscribe" &&
@@ -89,7 +115,15 @@ const sendWhatsAppText = async (to, message, phoneNumberId) => {
   }
 };
 
-const handleIncomingWebhook = async (payload) => {
+const handleIncomingWebhook = async (
+  payload,
+  {
+    db = prisma,
+    sendText = sendWhatsAppText,
+    askAIFn = askAI,
+    aiOptions = {},
+  } = {}
+) => {
   if (payload?.object !== "whatsapp_business_account") return;
 
   for (const entry of payload.entry ?? []) {
@@ -120,7 +154,7 @@ const handleIncomingWebhook = async (payload) => {
         // Claim each Meta message ID once. The database primary key prevents
         // duplicate processing across retries, restarts, and server instances.
         try {
-          await prisma.whatsAppProcessedMessage.create({
+          await db.whatsAppProcessedMessage.create({
             data: { messageId: message.id, status: "PROCESSING" },
           });
         } catch (error) {
@@ -134,68 +168,85 @@ const handleIncomingWebhook = async (payload) => {
         // Scope conversation history to both tenant and sender. A patient
         // messaging two hospital numbers must never share context across clinics.
         const conversationKey = `${clinicId}:${sender}`;
-        const history = conversations.get(conversationKey) ?? [];
 
-        try {
-          const reply = await askAI(
-            userMessage,
-            history,
-            process.env.AI_BOOKING_ENABLED === "true",
-            clinicId,
-            {
-              callerPhone: sender,
-              preserveToolHistory: true,
-              allowAppointmentChanges:
-                process.env.AI_APPOINTMENT_CHANGES_ENABLED === "true",
-            }
-          );
+        // Serialize message execution per conversation to prevent overlapping
+        // deliveries from reading stale conversation state or sending out-of-order prompts.
+        await enqueueConversation(conversationKey, async () => {
+          const history = conversations.get(conversationKey) ?? [];
 
-          const assistantMessage =
-            typeof reply === "string"
-              ? reply
-              : reply?.response;
-          if (!assistantMessage) {
-            throw new Error("AI returned no readable reply.");
-          }
-
-          // Persist the full server-generated tool-call/tool-result history.
-          // This lets later turns reuse real patient/doctor IDs returned by
-          // tools instead of asking the model to recreate or guess those IDs.
-          const updatedHistory = [
-            ...(reply.messages ?? []).filter((item) => item.role !== "system"),
-            { role: "assistant", content: assistantMessage },
-          ];
-
-          conversations.set(conversationKey, updatedHistory);
-
-          // Mark the event processed before sending the reply. If delivery fails,
-          // Meta retries must not repeat a booking/cancellation side effect.
-          await prisma.whatsAppProcessedMessage.update({
-            where: { messageId: message.id },
-            data: { status: "PROCESSED" },
-          });
-          await sendWhatsAppText(sender, assistantMessage, phoneNumberId);
-        } catch (error) {
-          console.error("[WhatsApp] AI processing failed:", error.message);
-
-          // Do not release the deduplication claim after an AI/tool failure:
-          // the tool may already have changed an appointment before a later
-          // step failed. Replaying could repeat a consequential action.
           try {
-            await prisma.whatsAppProcessedMessage.update({
-              where: { messageId: message.id },
-              data: { status: "FAILED" },
-            });
-          } catch (statusError) {
-            console.error("[WhatsApp] Could not mark message failed:", statusError.message);
-          }
+            const reply = await askAIFn(
+              userMessage,
+              history,
+              process.env.AI_BOOKING_ENABLED === "true",
+              clinicId,
+              {
+                callerPhone: sender,
+                preserveToolHistory: true,
+                allowAppointmentChanges:
+                  process.env.AI_APPOINTMENT_CHANGES_ENABLED === "true",
+                ...aiOptions,
+              }
+            );
 
-          await sendWhatsAppText(
-            sender,
-            "Sorry, I'm having trouble responding right now. Please try again shortly.",
-            phoneNumberId
-          );
-        }
+            const assistantMessage =
+              typeof reply === "string"
+                ? reply
+                : reply?.response;
+            if (!assistantMessage) {
+              throw new Error("AI returned no readable reply.");
+            }
+
+            // Persist the full server-generated tool-call/tool-result history.
+            // Avoid duplicate assistant messages and cap history to 20 messages.
+            const rawMessages = (reply.messages ?? []).filter(
+              (item) => item.role !== "system"
+            );
+            const lastMsg = rawMessages[rawMessages.length - 1];
+            const updatedHistory =
+              lastMsg &&
+              lastMsg.role === "assistant" &&
+              lastMsg.content === assistantMessage
+                ? rawMessages
+                : [
+                    ...rawMessages,
+                    { role: "assistant", content: assistantMessage },
+                  ];
+
+            conversations.set(conversationKey, updatedHistory.slice(-20));
+
+            // Mark the event processed before sending the reply. If delivery fails,
+            // Meta retries must not repeat a booking/cancellation side effect.
+            await db.whatsAppProcessedMessage.update({
+              where: { messageId: message.id },
+              data: { status: "PROCESSED" },
+            });
+            await sendText(sender, assistantMessage, phoneNumberId);
+          } catch (error) {
+            console.error("[WhatsApp] AI processing failed:", error.message);
+
+            // Do not release the deduplication claim after an AI/tool failure:
+            // the tool may already have changed an appointment before a later
+            // step failed. Replaying could repeat a consequential action.
+            try {
+              await db.whatsAppProcessedMessage.update({
+                where: { messageId: message.id },
+                data: { status: "FAILED" },
+              });
+            } catch (statusError) {
+              console.error(
+                "[WhatsApp] Could not mark message failed:",
+                statusError.message
+              );
+            }
+
+            await sendText(
+              sender,
+              "Sorry, I'm having trouble responding right now. Please try again shortly.",
+              phoneNumberId
+            );
+          }
+        });
       }
     }
   }
@@ -204,4 +255,8 @@ const handleIncomingWebhook = async (payload) => {
 module.exports = {
   verifyWebhook,
   handleIncomingWebhook,
+  conversations,
+  conversationQueues,
+  enqueueConversation,
+  sendWhatsAppText,
 };
