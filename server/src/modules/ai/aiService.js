@@ -147,7 +147,7 @@ const checkAvailabilityFunction = {
     name: "check_availability",
 
     description:
-      "Check whether a specific doctor has an appointment slot available at the hospital on a specific date and time. Use this before booking or rescheduling.",
+      "Check whether a specific doctor has an appointment slot available. Use this ONLY for rescheduling (to verify the new slot before calling reschedule_appointment) or when the patient explicitly asks whether a slot is free. Do NOT use this for new bookings — call book_appointment directly instead. Calling this tool does NOT stage any booking action and you MUST NOT ask the patient to confirm a booking after calling this tool alone.",
 
     parameters: {
       type: "object",
@@ -323,7 +323,7 @@ const bookAppointmentFunction = {
     name: "book_appointment",
 
     description:
-      "Book an appointment only after the doctor, patient, date and exact time are known, availability has been successfully checked, and the patient has explicitly confirmed the exact slot.",
+      "Stage a booking confirmation for an appointment. Call this when you know the doctor, patient, preferred date, and preferred time. The server will check availability and stage a pending confirmation record. The tool returns the exact details to show the patient before they confirm. Do NOT call check_availability before this — book_appointment handles availability internally. Do NOT ask the patient to confirm before calling this tool.",
 
     parameters: {
       type: "object",
@@ -874,35 +874,53 @@ If none match, say so.
 BOOKING FLOW
 ============================================================
 
-1. Identify the patient (auto-lookup if verified phone is available).
-2. Ask which doctor or specialization they want (only if not already known).
-3. Ask for the preferred date (only if not given).
-4. Ask for the preferred time (only if not given).
-5. Call check_availability.
-6. If available, tell the patient and ask for confirmation.
-7. Only after explicit confirmation, call book_appointment.
-8. Confirm success only if the backend confirms it.
+1. Identify the patient (call find_patient using their verified phone number if available, or ask for name).
+2. Ask which doctor or specialization they want (only if not already stated).
+3. Ask for the preferred date (only if not given). Convert natural dates internally to YYYY-MM-DD.
+4. Ask for the preferred time (only if not given). Convert to HH:MM 24-hour format.
+5. Once you have patient ID, doctor ID, date, and time — call book_appointment. The server will check availability and stage a pending confirmation record.
+6. Read the tool result:
+   a. If success: true and status: PENDING_CONFIRMATION — present the exact doctor name, date, and time from the tool result to the patient and ask: "Would you like me to confirm this booking?"
+   b. If success: false — share the tool-provided error message (e.g. slot unavailable) and alternatives. Do not fabricate alternatives.
+7. Wait for the patient to say "yes" (or equivalent). The server handles execution automatically.
+8. Do NOT call check_availability before book_appointment for new bookings — book_appointment handles availability internally.
+
+NEVER ask the patient for confirmation before calling book_appointment. Call book_appointment first; it stages the action safely.
 
 Ask only for missing information. Do not repeat steps the patient already completed.
 
 ============================================================
-AVAILABILITY
+AVAILABILITY (RESCHEDULING ONLY)
 ============================================================
 
-Only call check_availability when doctor, date, and exact time are known.
+Do NOT call check_availability for new bookings — use book_appointment instead.
+
+For rescheduling: call check_availability with the new date and time before calling reschedule_appointment.
 Convert times to 24-hour HH:MM format internally (e.g. 5 PM → 17:00).
 
 If a slot is unavailable, share only the backend-provided alternatives. Never invent alternatives.
 
 ============================================================
+DOCTOR SPECIALIZATION TRANSPARENCY
+============================================================
+
+When reporting a doctor to the patient, always use the doctor's actual specialization field from the database, not the patient's query term.
+
+For example: if the patient asks for a "cardiologist" and the database returns Dr. Sharma with specialization "Heart", say: "Dr. Sharma (specialization: Heart) is available..."
+
+Do NOT call Dr. Sharma a "cardiologist" unless the stored specialization field says "cardiologist".
+
+============================================================
 EXPLICIT CONFIRMATION
 ============================================================
 
-Before booking, cancelling, or rescheduling — always ask for explicit confirmation.
+For booking: the server stages the action when book_appointment is called. After presenting the staged details, wait for explicit confirmation.
+
+For cancellation and rescheduling: always ask for explicit confirmation before calling cancel_appointment or reschedule_appointment.
 
 Examples of confirmation: "yes", "book it", "confirm", "go ahead".
 
-If the patient just says "yes" but the specific slot is ambiguous, ask them to clarify.
+If the patient says "yes" but the specific slot is ambiguous (e.g. they haven't seen the staged details yet), repeat the staged details and ask again.
 
 ============================================================
 CANCELLATION & RESCHEDULING
@@ -1058,7 +1076,7 @@ Email is optional.
         // ====================================================
 
         if (toolName === "check_availability") {
-          result = await checkAvailabilityTool({
+          const availResult = await checkAvailabilityTool({
             ...args,
 
             /*
@@ -1069,6 +1087,14 @@ Email is optional.
              */
             clinicId,
           });
+
+          // Append an explicit instruction so the LLM cannot mistake an
+          // availability result for a staged booking confirmation.
+          result = {
+            ...availResult,
+            staging_note:
+              "This result does NOT stage any booking action. To create a pending booking that the patient can confirm, call book_appointment.",
+          };
         }
 
         // ====================================================
@@ -1280,10 +1306,11 @@ Email is optional.
                     actionType: "BOOK",
                     details: {
                       doctorName: doctor.name,
+                      doctorSpecialization: doctor.specialization,
                       appointmentDate: args.appointmentDate,
                       startTime: args.startTime,
                     },
-                    message: `Appointment details are staged and held. You MUST ask the patient to confirm: "Would you like me to book your appointment with ${doctor.name} on ${args.appointmentDate} at ${args.startTime}?" Do not say it is booked yet.`,
+                    message: `Appointment details are staged and held. You MUST ask the patient to confirm using the EXACT details from the 'details' field: "Would you like me to book your appointment with ${doctor.name} (${doctor.specialization}) on ${args.appointmentDate} at ${args.startTime}?" Do not say it is booked yet. Always use the doctor's actual specialization from 'details.doctorSpecialization', not the patient's query term.`,
                   };
                 }
               }
