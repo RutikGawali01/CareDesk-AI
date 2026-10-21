@@ -25,7 +25,13 @@ const {
   getActorKey,
   createPendingConfirmation,
   getPendingConfirmation,
+  claimPendingConfirmation,
   consumePendingConfirmation,
+  markConfirmationConsumed,
+  markConfirmationFailed,
+  markConfirmationUncertain,
+  releasePendingConfirmation,
+  verifyAppointmentCommitted,
   executeConfirmedAppointmentMutation,
 } = require("../appointments/appointmentConfirmation");
 
@@ -630,7 +636,7 @@ async function askAI(
 
     const pending = await getPendingConfirmation(actorKey, db);
     if (pending) {
-      const claimed = await consumePendingConfirmation(pending.id, actorKey, db);
+      const claimed = await claimPendingConfirmation(pending.id, actorKey, db);
       if (!claimed) {
         const reply =
           "This confirmation request has already been processed or expired. Please let me know what you would like to do.";
@@ -656,14 +662,57 @@ async function askAI(
         }
       }
 
-      const execution = await executeConfirmedAppointmentMutation({
-        pending,
-        clinicId,
-        patientId,
-        allowBooking,
-        allowAppointmentChanges,
-        services: confirmationServices,
-      });
+      let execution;
+      try {
+        execution = await executeConfirmedAppointmentMutation({
+          pending,
+          clinicId,
+          patientId,
+          allowBooking,
+          allowAppointmentChanges,
+          services: confirmationServices,
+        });
+      } catch (err) {
+        execution = {
+          success: false,
+          mutationException: true,
+          error: err.message,
+          message:
+            "There was a system interruption while finalizing your appointment. To prevent duplicate bookings, please check your appointment status or contact the clinic before trying again.",
+        };
+      }
+
+      if (execution.success) {
+        await markConfirmationConsumed(pending.id, actorKey, db);
+      } else if (execution.preMutationException) {
+        // Safe to release back to PENDING if unexpired because mutation was never called
+        await releasePendingConfirmation(pending.id, actorKey, db);
+      } else if (execution.mutationException) {
+        // Uncertain outcome! Do NOT blindly reset to PENDING.
+        // Check whether the database actually committed the appointment.
+        const committed = await verifyAppointmentCommitted({
+          pending,
+          clinicId,
+          patientId,
+          db,
+        });
+        if (committed) {
+          await markConfirmationConsumed(pending.id, actorKey, db);
+          const successMsg =
+            pending.actionType === "BOOK"
+              ? `Your appointment on ${pending.payload.appointmentDate} at ${pending.payload.startTime} has been successfully confirmed and booked.`
+              : pending.actionType === "RESCHEDULE"
+              ? `Your appointment has been successfully rescheduled to ${pending.payload.newDate} at ${pending.payload.newTime}.`
+              : "Your appointment has been successfully cancelled.";
+          execution = { success: true, message: successMsg };
+        } else {
+          // Cannot verify commit: record UNCERTAIN, never reset to PENDING
+          await markConfirmationUncertain(pending.id, actorKey, execution.error, db);
+        }
+      } else {
+        // Availability failure or mutation failed cleanly
+        await markConfirmationFailed(pending.id, actorKey, execution.error, db);
+      }
 
       return {
         response: execution.message,
@@ -674,13 +723,51 @@ async function askAI(
         ],
       };
     } else {
-      // Check if there was an expired or consumed record to give immediate clear feedback
+      // Check if there was an expired, consumed, failed, or uncertain record to give immediate clear feedback
       try {
         const recent = await db.appointmentConfirmation.findUnique({
           where: { actorKey },
         });
         if (recent && recent.status === "CONSUMED") {
           const reply = "This appointment confirmation has already been processed.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "PROCESSING") {
+          const reply =
+            "Your confirmation request is currently being processed. Please wait a moment.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "UNCERTAIN") {
+          const reply =
+            "Your previous appointment confirmation status is uncertain due to a system interruption. To prevent duplicate bookings, please verify your appointments with the clinic before trying again.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "FAILED") {
+          const failureReason = recent.payload?.failureReason || "";
+          const reply = failureReason.toLowerCase().includes("available")
+            ? "That appointment slot is no longer available. Please select another time."
+            : "This appointment request could not be completed. Please let me know what you would like to do.";
           return {
             response: reply,
             messages: [

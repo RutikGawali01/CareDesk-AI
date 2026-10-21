@@ -60,7 +60,21 @@ async function getPendingConfirmation(actorKey, db = getPrisma()) {
   return pending;
 }
 
-// Atomic one-time claim. Only one concurrent confirmation request can win.
+// Atomic claim transitioning PENDING -> PROCESSING
+async function claimPendingConfirmation(id, actorKey, db = getPrisma()) {
+  const claimed = await db.appointmentConfirmation.updateMany({
+    where: {
+      id,
+      actorKey,
+      status: "PENDING",
+      expiresAt: { gt: new Date() },
+    },
+    data: { status: "PROCESSING" },
+  });
+  return claimed.count === 1;
+}
+
+// Atomic one-time claim. Backward-compatible direct claim to CONSUMED.
 async function consumePendingConfirmation(id, actorKey, db = getPrisma()) {
   const claimed = await db.appointmentConfirmation.updateMany({
     where: {
@@ -72,6 +86,94 @@ async function consumePendingConfirmation(id, actorKey, db = getPrisma()) {
     data: { status: "CONSUMED" },
   });
   return claimed.count === 1;
+}
+
+async function markConfirmationConsumed(id, actorKey, db = getPrisma()) {
+  return db.appointmentConfirmation.updateMany({
+    where: { id, actorKey },
+    data: { status: "CONSUMED" },
+  });
+}
+
+async function markConfirmationFailed(id, actorKey, failureReason, db = getPrisma()) {
+  const record = await db.appointmentConfirmation.findUnique({ where: { actorKey } }).catch(() => null);
+  const payload =
+    record?.payload && typeof record.payload === "object"
+      ? { ...record.payload, failureReason }
+      : { failureReason };
+  return db.appointmentConfirmation.updateMany({
+    where: { id, actorKey },
+    data: { status: "FAILED", payload },
+  });
+}
+
+async function markConfirmationUncertain(id, actorKey, failureReason, db = getPrisma()) {
+  const record = await db.appointmentConfirmation.findUnique({ where: { actorKey } }).catch(() => null);
+  const payload =
+    record?.payload && typeof record.payload === "object"
+      ? { ...record.payload, failureReason, uncertainAt: new Date().toISOString() }
+      : { failureReason, uncertainAt: new Date().toISOString() };
+  return db.appointmentConfirmation.updateMany({
+    where: { id, actorKey },
+    data: { status: "UNCERTAIN", payload },
+  });
+}
+
+async function releasePendingConfirmation(id, actorKey, db = getPrisma()) {
+  const record = await db.appointmentConfirmation.findUnique({ where: { actorKey } }).catch(() => null);
+  if (!record || record.id !== id) return false;
+  const isExpired = new Date(record.expiresAt) <= new Date();
+  const nextStatus = isExpired ? "EXPIRED" : "PENDING";
+  const updated = await db.appointmentConfirmation.updateMany({
+    where: { id, actorKey, status: "PROCESSING" },
+    data: { status: nextStatus },
+  });
+  return updated.count === 1;
+}
+
+async function verifyAppointmentCommitted({ pending, clinicId, patientId, db = getPrisma() }) {
+  if (!pending || !pending.actionType || !db?.appointment?.findFirst) {
+    return false;
+  }
+  try {
+    if (pending.actionType === "BOOK") {
+      const match = await db.appointment.findFirst({
+        where: {
+          clinicId: Number(clinicId),
+          doctorId: Number(pending.payload.doctorId),
+          appointmentDate: new Date(pending.payload.appointmentDate),
+          startTime: pending.payload.startTime,
+          patientId: patientId != null ? Number(patientId) : Number(pending.payload.patientId),
+          status: "BOOKED",
+        },
+      });
+      return !!match;
+    }
+    if (pending.actionType === "RESCHEDULE") {
+      const match = await db.appointment.findFirst({
+        where: {
+          id: Number(pending.payload.appointmentId),
+          clinicId: Number(clinicId),
+          appointmentDate: new Date(pending.payload.newDate),
+          startTime: pending.payload.newTime,
+        },
+      });
+      return !!match;
+    }
+    if (pending.actionType === "CANCEL") {
+      const match = await db.appointment.findFirst({
+        where: {
+          id: Number(pending.payload.appointmentId),
+          clinicId: Number(clinicId),
+          status: "CANCELLED",
+        },
+      });
+      return !!match;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function validatePendingConfirmationScope({ pending, clinicId, patientId = null }) {
@@ -121,22 +223,35 @@ async function executeConfirmedAppointmentMutation({
     if (!allowBooking) {
       return {
         success: false,
+        failureType: "MUTATION_DISABLED",
         error: "Appointment booking is currently disabled.",
         message: "Appointment booking is currently disabled.",
       };
     }
 
     // Revalidate slot availability immediately before execution
-    const availability = await checkAvailability(
-      Number(pending.payload.doctorId),
-      pending.payload.appointmentDate,
-      pending.payload.startTime,
-      Number(clinicId)
-    );
+    let availability;
+    try {
+      availability = await checkAvailability(
+        Number(pending.payload.doctorId),
+        pending.payload.appointmentDate,
+        pending.payload.startTime,
+        Number(clinicId)
+      );
+    } catch (availErr) {
+      return {
+        success: false,
+        preMutationException: true,
+        error: availErr.message || "Availability check failed",
+        message:
+          "A temporary system issue occurred while checking appointment availability. Please reply 'yes' to try again.",
+      };
+    }
 
     if (!availability.available) {
       return {
         success: false,
+        availabilityFailed: true,
         error: "Slot no longer available",
         message:
           availability.message ||
@@ -144,14 +259,26 @@ async function executeConfirmedAppointmentMutation({
       };
     }
 
-    const bookingResult = await bookAppointment({
-      ...pending.payload,
-      clinicId: Number(clinicId),
-    });
+    let bookingResult;
+    try {
+      bookingResult = await bookAppointment({
+        ...pending.payload,
+        clinicId: Number(clinicId),
+      });
+    } catch (mutationErr) {
+      return {
+        success: false,
+        mutationException: true,
+        error: mutationErr.message || "Booking exception",
+        message:
+          "There was a system interruption while finalizing your appointment. To prevent duplicate bookings, please check your appointment status or contact the clinic before trying again.",
+      };
+    }
 
     if (!bookingResult.success) {
       return {
         success: false,
+        mutationFailed: true,
         error: bookingResult.error || "Booking failed",
         message:
           bookingResult.error ||
@@ -172,6 +299,7 @@ async function executeConfirmedAppointmentMutation({
     if (!allowAppointmentChanges) {
       return {
         success: false,
+        failureType: "MUTATION_DISABLED",
         error: "Appointment cancellation is currently disabled.",
         message: "Appointment cancellation is currently disabled.",
       };
@@ -182,21 +310,27 @@ async function executeConfirmedAppointmentMutation({
       cancelResult = await cancelAppointment({
         appointmentId: Number(pending.payload.appointmentId),
         clinicId: Number(clinicId),
-        patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : (patientId != null ? Number(patientId) : undefined),
+        patientId:
+          pending.payload.patientId != null
+            ? Number(pending.payload.patientId)
+            : patientId != null
+            ? Number(patientId)
+            : undefined,
       });
     } catch (err) {
       return {
         success: false,
+        mutationException: true,
         error: err.message || "Cancellation failed",
         message:
-          err.message ||
-          "Could not cancel the appointment. Please contact the hospital.",
+          "There was a system interruption while cancelling your appointment. To prevent duplicate actions, please check your appointment status or contact the clinic.",
       };
     }
 
     if (cancelResult && cancelResult.success === false) {
       return {
         success: false,
+        mutationFailed: true,
         error: cancelResult.error || "Cancellation failed",
         message:
           cancelResult.error ||
@@ -217,23 +351,36 @@ async function executeConfirmedAppointmentMutation({
     if (!allowAppointmentChanges) {
       return {
         success: false,
+        failureType: "MUTATION_DISABLED",
         error: "Appointment rescheduling is currently disabled.",
         message: "Appointment rescheduling is currently disabled.",
       };
     }
 
     // Revalidate slot availability for the new date and time
-    const availability = await checkAvailability(
-      Number(pending.payload.doctorId),
-      pending.payload.newDate,
-      pending.payload.newTime,
-      Number(clinicId),
-      Number(pending.payload.appointmentId)
-    );
+    let availability;
+    try {
+      availability = await checkAvailability(
+        Number(pending.payload.doctorId),
+        pending.payload.newDate,
+        pending.payload.newTime,
+        Number(clinicId),
+        Number(pending.payload.appointmentId)
+      );
+    } catch (availErr) {
+      return {
+        success: false,
+        preMutationException: true,
+        error: availErr.message || "Availability check failed",
+        message:
+          "A temporary system issue occurred while checking appointment availability. Please reply 'yes' to try again.",
+      };
+    }
 
     if (!availability.available) {
       return {
         success: false,
+        availabilityFailed: true,
         error: "New slot no longer available",
         message:
           availability.message ||
@@ -248,21 +395,27 @@ async function executeConfirmedAppointmentMutation({
         newDate: pending.payload.newDate,
         newTime: pending.payload.newTime,
         clinicId: Number(clinicId),
-        patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : (patientId != null ? Number(patientId) : undefined),
+        patientId:
+          pending.payload.patientId != null
+            ? Number(pending.payload.patientId)
+            : patientId != null
+            ? Number(patientId)
+            : undefined,
       });
     } catch (err) {
       return {
         success: false,
+        mutationException: true,
         error: err.message || "Rescheduling failed",
         message:
-          err.message ||
-          "Could not reschedule the appointment. Please choose another time.",
+          "There was a system interruption while finalizing your appointment. To prevent duplicate bookings, please check your appointment status or contact the clinic before trying again.",
       };
     }
 
     if (rescheduleResult && rescheduleResult.success === false) {
       return {
         success: false,
+        mutationFailed: true,
         error: rescheduleResult.error || "Rescheduling failed",
         message:
           rescheduleResult.error ||
@@ -290,7 +443,13 @@ module.exports = {
   getActorKey,
   createPendingConfirmation,
   getPendingConfirmation,
+  claimPendingConfirmation,
   consumePendingConfirmation,
+  markConfirmationConsumed,
+  markConfirmationFailed,
+  markConfirmationUncertain,
+  releasePendingConfirmation,
+  verifyAppointmentCommitted,
   validatePendingConfirmationScope,
   executeConfirmedAppointmentMutation,
 };

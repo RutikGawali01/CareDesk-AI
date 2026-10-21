@@ -5,15 +5,26 @@ const {
   getActorKey,
   createPendingConfirmation,
   getPendingConfirmation,
+  claimPendingConfirmation,
   consumePendingConfirmation,
+  markConfirmationConsumed,
+  markConfirmationFailed,
+  markConfirmationUncertain,
+  releasePendingConfirmation,
+  verifyAppointmentCommitted,
   validatePendingConfirmationScope,
   executeConfirmedAppointmentMutation,
 } = require("../src/modules/appointments/appointmentConfirmation");
 
-function createMockDb(initialRecords = []) {
+function createMockDb(initialRecords = [], initialAppointments = []) {
   const store = new Map();
   for (const r of initialRecords) {
     store.set(r.id || r.actorKey, { ...r });
+  }
+
+  const apptStore = new Map();
+  for (const a of initialAppointments) {
+    apptStore.set(a.id, { ...a });
   }
 
   return {
@@ -57,6 +68,32 @@ function createMockDb(initialRecords = []) {
           count++;
         }
         return { count };
+      },
+    },
+
+    appointment: {
+      async findFirst({ where }) {
+        for (const a of apptStore.values()) {
+          if (where.id && a.id !== where.id) continue;
+          if (where.clinicId && a.clinicId !== where.clinicId) continue;
+          if (where.doctorId && a.doctorId !== where.doctorId) continue;
+          if (where.patientId && a.patientId !== where.patientId) continue;
+          if (where.status && a.status !== where.status) continue;
+          if (where.startTime && a.startTime !== where.startTime) continue;
+          if (where.appointmentDate) {
+            const expected = new Date(where.appointmentDate).toISOString().slice(0, 10);
+            const actual = new Date(a.appointmentDate).toISOString().slice(0, 10);
+            if (expected !== actual) continue;
+          }
+          return { ...a };
+        }
+        return null;
+      },
+      async create({ data }) {
+        const id = data.id || Math.floor(Math.random() * 1000) + 1;
+        const record = { id, ...data };
+        apptStore.set(id, record);
+        return record;
       },
     },
   };
@@ -360,5 +397,309 @@ test("executeConfirmedAppointmentMutation: executes booking with saved payload w
   assert.equal(bookedWithPayload.appointmentDate, "2026-10-20");
   assert.equal(bookedWithPayload.startTime, "10:00");
   assert.match(result.message, /successfully confirmed and booked/);
+});
+
+// ============================================================
+// FAILURE RECOVERY & UNCERTAIN OUTCOME TESTS
+// ============================================================
+
+test("failure recovery: pre-mutation availability exception safely releases confirmation back to PENDING if unexpired", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-pre-exc-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PENDING",
+    expiresAt: new Date(Date.now() + 300000), // unexpired
+  };
+  const db = createMockDb([record]);
+
+  // Step 1: Claim atomically into PROCESSING
+  const claimed = await claimPendingConfirmation("conf-pre-exc-1", actorKey, db);
+  assert.equal(claimed, true);
+
+  // Step 2: Pre-mutation availability check throws transient exception
+  let mutationAttempted = false;
+  const failingServices = {
+    checkAvailability: async () => {
+      throw new Error("Transient database network failure");
+    },
+    bookAppointment: async () => {
+      mutationAttempted = true;
+      return { success: true };
+    },
+  };
+
+  const result = await executeConfirmedAppointmentMutation({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    allowBooking: true,
+    services: failingServices,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.preMutationException, true);
+  assert.equal(mutationAttempted, false, "Mutation must NEVER be attempted when pre-check fails");
+
+  // Step 3: Safe release back to PENDING because mutation was never called
+  const released = await releasePendingConfirmation("conf-pre-exc-1", actorKey, db);
+  assert.equal(released, true);
+
+  const restored = await getPendingConfirmation(actorKey, db);
+  assert.ok(restored);
+  assert.equal(restored.status, "PENDING");
+});
+
+test("failure recovery: pre-mutation availability exception transitions to EXPIRED if TTL has elapsed", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-pre-expired-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PROCESSING",
+    expiresAt: new Date(Date.now() - 1000), // already expired
+  };
+  const db = createMockDb([record]);
+
+  // Releasing an expired confirmation marks it EXPIRED, not PENDING
+  const released = await releasePendingConfirmation("conf-pre-expired-1", actorKey, db);
+  assert.equal(released, true);
+
+  const fetched = await db.appointmentConfirmation.findUnique({ where: { actorKey } });
+  assert.equal(fetched.status, "EXPIRED");
+
+  // Cannot be claimed again
+  const pending = await getPendingConfirmation(actorKey, db);
+  assert.equal(pending, null);
+});
+
+test("failure recovery: availability failure marks confirmation FAILED and protects against replay", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-avail-fail-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PROCESSING",
+    expiresAt: new Date(Date.now() + 300000),
+  };
+  const db = createMockDb([record]);
+
+  // Slot unavailable
+  const unavailableServices = {
+    checkAvailability: async () => ({
+      available: false,
+      message: "Dr. Sharma is fully booked at 10:00.",
+    }),
+    bookAppointment: async () => {
+      throw new Error("Must not be called");
+    },
+  };
+
+  const result = await executeConfirmedAppointmentMutation({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    services: unavailableServices,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.availabilityFailed, true);
+
+  // Mark FAILED with reason
+  await markConfirmationFailed("conf-avail-fail-1", actorKey, result.error, db);
+
+  const updated = await db.appointmentConfirmation.findUnique({ where: { actorKey } });
+  assert.equal(updated.status, "FAILED");
+  assert.equal(updated.payload.failureReason, "Slot no longer available");
+
+  // Subsequent getPendingConfirmation returns null (replay protected)
+  const pending = await getPendingConfirmation(actorKey, db);
+  assert.equal(pending, null);
+});
+
+test("failure recovery: explicit mutation failure marks confirmation FAILED without resetting to PENDING", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-mut-fail-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PROCESSING",
+    expiresAt: new Date(Date.now() + 300000),
+  };
+  const db = createMockDb([record]);
+
+  const failingServices = {
+    checkAvailability: async () => ({ available: true }),
+    bookAppointment: async () => ({
+      success: false,
+      error: "Doctor schedule conflict detected at booking time",
+    }),
+  };
+
+  const result = await executeConfirmedAppointmentMutation({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    services: failingServices,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.mutationFailed, true);
+
+  // Mark FAILED
+  await markConfirmationFailed("conf-mut-fail-1", actorKey, result.error, db);
+
+  const updated = await db.appointmentConfirmation.findUnique({ where: { actorKey } });
+  assert.equal(updated.status, "FAILED");
+  assert.equal(updated.payload.failureReason, "Doctor schedule conflict detected at booking time");
+
+  // Never reset to PENDING
+  const pending = await getPendingConfirmation(actorKey, db);
+  assert.equal(pending, null);
+});
+
+test("uncertain outcome: database exception during mutation marks UNCERTAIN when commit cannot be verified", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-uncertain-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PROCESSING",
+    expiresAt: new Date(Date.now() + 300000),
+  };
+  // Empty appointment store: commit did not happen
+  const db = createMockDb([record], []);
+
+  const throwingServices = {
+    checkAvailability: async () => ({ available: true }),
+    bookAppointment: async () => {
+      throw new Error("Connection terminated unexpectedly during commit");
+    },
+  };
+
+  const result = await executeConfirmedAppointmentMutation({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    services: throwingServices,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.mutationException, true);
+  assert.match(result.message, /interruption while finalizing/);
+
+  // Verification check proves appointment was NOT committed
+  const committed = await verifyAppointmentCommitted({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    db,
+  });
+  assert.equal(committed, false);
+
+  // Must mark UNCERTAIN and NEVER blindly reset to PENDING
+  await markConfirmationUncertain("conf-uncertain-1", actorKey, result.error, db);
+
+  const updated = await db.appointmentConfirmation.findUnique({ where: { actorKey } });
+  assert.equal(updated.status, "UNCERTAIN");
+  assert.ok(updated.payload.uncertainAt);
+  assert.equal(updated.payload.failureReason, "Connection terminated unexpectedly during commit");
+
+  // Replay protected: cannot be claimed again
+  const pending = await getPendingConfirmation(actorKey, db);
+  assert.equal(pending, null);
+});
+
+test("uncertain outcome recovery: database exception during mutation recovers as CONSUMED when appointment committed", async () => {
+  const actorKey = getActorKey({ clinicId: 1, callerPhone: "919876543210" });
+  const record = {
+    id: "conf-uncertain-commit-1",
+    actorKey,
+    clinicId: 1,
+    patientId: 10,
+    actionType: "BOOK",
+    payload: {
+      clinicId: 1,
+      patientId: 10,
+      doctorId: 2,
+      appointmentDate: "2026-10-20",
+      startTime: "10:00",
+    },
+    status: "PROCESSING",
+    expiresAt: new Date(Date.now() + 300000),
+  };
+
+  // Pre-seed an appointment: simulates a write that committed right before the connection dropped
+  const committedAppt = {
+    id: 99,
+    clinicId: 1,
+    patientId: 10,
+    doctorId: 2,
+    appointmentDate: new Date("2026-10-20"),
+    startTime: "10:00",
+    status: "BOOKED",
+  };
+  const db = createMockDb([record], [committedAppt]);
+
+  // Verification check finds the committed appointment!
+  const committed = await verifyAppointmentCommitted({
+    pending: record,
+    clinicId: 1,
+    patientId: 10,
+    db,
+  });
+  assert.equal(committed, true, "Successfully verified appointment committed in database");
+
+  // Recovers by marking CONSUMED rather than leaving user in limbo or creating duplicate
+  await markConfirmationConsumed("conf-uncertain-commit-1", actorKey, db);
+
+  const updated = await db.appointmentConfirmation.findUnique({ where: { actorKey } });
+  assert.equal(updated.status, "CONSUMED");
 });
 

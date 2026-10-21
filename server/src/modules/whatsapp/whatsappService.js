@@ -80,7 +80,10 @@ const sendWhatsAppText = async (to, message, phoneNumberId) => {
 
   if (!accessToken || !phoneNumberId) {
     console.error("[WhatsApp] Missing API credentials.");
-    return;
+    return {
+      success: false,
+      error: "Missing API credentials (WHATSAPP_ACCESS_TOKEN or phoneNumberId).",
+    };
   }
 
   try {
@@ -102,18 +105,119 @@ const sendWhatsAppText = async (to, message, phoneNumberId) => {
       }
     );
 
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       console.error("[WhatsApp] Send failed:", result);
-      return;
+      return {
+        success: false,
+        error: result?.error?.message || `HTTP ${response.status}: WhatsApp send failed.`,
+        data: result,
+      };
     }
 
     console.log("[WhatsApp] Reply sent successfully.");
+    return {
+      success: true,
+      messageId: result?.messages?.[0]?.id || null,
+      data: result,
+    };
   } catch (error) {
     console.error("[WhatsApp] API request failed:", error.message);
+    return {
+      success: false,
+      error: error.message || "Failed to send WhatsApp message.",
+    };
   }
 };
+
+// Map of failed outbound messages keyed by incoming Meta message ID.
+// Stores: { sender, message, phoneNumberId, error, attempts, firstFailedAt, lastAttemptAt }
+const failedOutboundReplies = new Map();
+
+function recordFailedOutbound(messageId, details) {
+  const existing = failedOutboundReplies.get(messageId);
+  failedOutboundReplies.set(messageId, {
+    sender: details.sender,
+    message: details.message,
+    phoneNumberId: details.phoneNumberId,
+    error: details.error || "Delivery failed",
+    attempts: (existing?.attempts || 0) + 1,
+    firstFailedAt: existing?.firstFailedAt || new Date(),
+    lastAttemptAt: new Date(),
+  });
+}
+
+function getFailedOutbound(messageId) {
+  return failedOutboundReplies.get(messageId) || null;
+}
+
+function clearFailedOutbound(messageId) {
+  if (messageId) {
+    failedOutboundReplies.delete(messageId);
+  } else {
+    failedOutboundReplies.clear();
+  }
+}
+
+async function retryFailedOutboundMessage(
+  messageId,
+  { db = prisma, sendText = sendWhatsAppText } = {}
+) {
+  const failed = getFailedOutbound(messageId);
+  if (!failed) {
+    return {
+      success: false,
+      error: `No recorded failed outbound reply found for message ID: ${messageId}`,
+    };
+  }
+
+  try {
+    const sendResult = await sendText(
+      failed.sender,
+      failed.message,
+      failed.phoneNumberId
+    );
+
+    const deliverySuccess = sendResult ? sendResult.success !== false : true;
+
+    if (deliverySuccess) {
+      failedOutboundReplies.delete(messageId);
+      try {
+        await db.whatsAppProcessedMessage.update({
+          where: { messageId },
+          data: { status: "PROCESSED" },
+        });
+      } catch (dbErr) {
+        console.error(
+          "[WhatsApp] Could not update message status after retry:",
+          dbErr.message
+        );
+      }
+      return {
+        success: true,
+        messageId,
+        data: sendResult?.data,
+      };
+    } else {
+      failed.attempts += 1;
+      failed.lastAttemptAt = new Date();
+      failed.error = sendResult?.error || "Retry delivery failed";
+      return {
+        success: false,
+        error: failed.error,
+      };
+    }
+  } catch (err) {
+    failed.attempts += 1;
+    failed.lastAttemptAt = new Date();
+    failed.error = err.message;
+    return {
+      success: false,
+      error: err.message,
+    };
+  }
+}
 
 const handleIncomingWebhook = async (
   payload,
@@ -159,7 +263,18 @@ const handleIncomingWebhook = async (
           });
         } catch (error) {
           if (error?.code === "P2002") {
-            console.log("[WhatsApp] Ignoring duplicate message ID.");
+            const failedRecord = getFailedOutbound(message.id);
+            if (failedRecord) {
+              console.log(
+                `[WhatsApp] Meta retry received for message ${message.id} with failed outbound delivery. Retrying reply without re-executing AI...`
+              );
+              const conversationKey = `${clinicId}:${sender}`;
+              await enqueueConversation(conversationKey, async () => {
+                await retryFailedOutboundMessage(message.id, { db, sendText });
+              });
+            } else {
+              console.log("[WhatsApp] Ignoring duplicate message ID.");
+            }
             continue;
           }
           throw error;
@@ -215,13 +330,39 @@ const handleIncomingWebhook = async (
 
             conversations.set(conversationKey, updatedHistory.slice(-20));
 
-            // Mark the event processed before sending the reply. If delivery fails,
-            // Meta retries must not repeat a booking/cancellation side effect.
-            await db.whatsAppProcessedMessage.update({
-              where: { messageId: message.id },
-              data: { status: "PROCESSED" },
-            });
-            await sendText(sender, assistantMessage, phoneNumberId);
+            // Send outbound reply. If delivery fails, mark DELIVERY_FAILED and record the reply.
+            // Meta retries or manual retries can deliver the message safely without repeating mutations.
+            let sendResult;
+            try {
+              sendResult = await sendText(sender, assistantMessage, phoneNumberId);
+            } catch (sendErr) {
+              sendResult = { success: false, error: sendErr.message };
+            }
+
+            const deliverySuccess = sendResult ? sendResult.success !== false : true;
+
+            if (deliverySuccess) {
+              await db.whatsAppProcessedMessage.update({
+                where: { messageId: message.id },
+                data: { status: "PROCESSED" },
+              });
+              failedOutboundReplies.delete(message.id);
+            } else {
+              console.error(
+                `[WhatsApp] Outbound send failed for message ${message.id}:`,
+                sendResult?.error
+              );
+              recordFailedOutbound(message.id, {
+                sender,
+                message: assistantMessage,
+                phoneNumberId,
+                error: sendResult?.error,
+              });
+              await db.whatsAppProcessedMessage.update({
+                where: { messageId: message.id },
+                data: { status: "DELIVERY_FAILED" },
+              });
+            }
           } catch (error) {
             console.error("[WhatsApp] AI processing failed:", error.message);
 
@@ -240,11 +381,15 @@ const handleIncomingWebhook = async (
               );
             }
 
-            await sendText(
-              sender,
-              "Sorry, I'm having trouble responding right now. Please try again shortly.",
-              phoneNumberId
-            );
+            try {
+              await sendText(
+                sender,
+                "Sorry, I'm having trouble responding right now. Please try again shortly.",
+                phoneNumberId
+              );
+            } catch {
+              // Ignore failure in error message send
+            }
           }
         });
       }
@@ -259,4 +404,9 @@ module.exports = {
   conversationQueues,
   enqueueConversation,
   sendWhatsAppText,
+  failedOutboundReplies,
+  recordFailedOutbound,
+  getFailedOutbound,
+  clearFailedOutbound,
+  retryFailedOutboundMessage,
 };

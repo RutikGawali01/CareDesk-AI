@@ -1,4 +1,8 @@
-const { verifyWebhook, handleIncomingWebhook } = require("./whatsappService");
+const {
+  verifyWebhook,
+  handleIncomingWebhook,
+  retryFailedOutboundMessage,
+} = require("./whatsappService");
 const { isValidMetaSignature } = require("./whatsappSecurity");
 
 /**
@@ -37,4 +41,26 @@ const incomingWebhookController = (req, res) => {
   return res.sendStatus(200);
 };
 
-module.exports = { verifyWebhookController, incomingWebhookController };
+/**
+ * POST /api/whatsapp/retry-delivery
+ * Safely retry sending a failed outbound reply without re-executing AI mutations.
+ */
+const retryFailedDeliveryController = async (req, res) => {
+  const { messageId } = req.body || {};
+  if (!messageId) {
+    return res.status(400).json({ error: "messageId is required." });
+  }
+
+  const result = await retryFailedOutboundMessage(messageId);
+  if (!result.success) {
+    const statusCode = result.error?.includes("No recorded") ? 404 : 502;
+    return res.status(statusCode).json(result);
+  }
+  return res.status(200).json(result);
+};
+
+module.exports = {
+  verifyWebhookController,
+  incomingWebhookController,
+  retryFailedDeliveryController,
+};
