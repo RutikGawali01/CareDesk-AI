@@ -177,18 +177,30 @@ async function executeConfirmedAppointmentMutation({
       };
     }
 
-    const cancelResult = await cancelAppointment({
-      appointmentId: Number(pending.payload.appointmentId),
-      clinicId: Number(clinicId),
-      patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : undefined,
-    });
+    let cancelResult;
+    try {
+      cancelResult = await cancelAppointment({
+        appointmentId: Number(pending.payload.appointmentId),
+        clinicId: Number(clinicId),
+        patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : (patientId != null ? Number(patientId) : undefined),
+      });
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message || "Cancellation failed",
+        message:
+          err.message ||
+          "Could not cancel the appointment. Please contact the hospital.",
+      };
+    }
 
-    if (!cancelResult.success) {
+    if (cancelResult && cancelResult.success === false) {
       return {
         success: false,
         error: cancelResult.error || "Cancellation failed",
         message:
           cancelResult.error ||
+          cancelResult.message ||
           "Could not cancel the appointment. Please contact the hospital.",
       };
     }
@@ -196,6 +208,7 @@ async function executeConfirmedAppointmentMutation({
     return {
       success: true,
       actionType: "CANCEL",
+      appointment: cancelResult?.appointment || cancelResult,
       message: "Your appointment has been successfully cancelled.",
     };
   }
@@ -228,27 +241,42 @@ async function executeConfirmedAppointmentMutation({
       };
     }
 
-    const rescheduleResult = await rescheduleAppointment({
-      appointmentId: Number(pending.payload.appointmentId),
-      newDate: pending.payload.newDate,
-      newTime: pending.payload.newTime,
-      clinicId: Number(clinicId),
-      patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : undefined,
-    });
+    let rescheduleResult;
+    try {
+      rescheduleResult = await rescheduleAppointment({
+        appointmentId: Number(pending.payload.appointmentId),
+        newDate: pending.payload.newDate,
+        newTime: pending.payload.newTime,
+        clinicId: Number(clinicId),
+        patientId: pending.payload.patientId != null ? Number(pending.payload.patientId) : (patientId != null ? Number(patientId) : undefined),
+      });
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message || "Rescheduling failed",
+        message:
+          err.message ||
+          "Could not reschedule the appointment. Please choose another time.",
+      };
+    }
 
-    if (!rescheduleResult.success) {
+    if (rescheduleResult && rescheduleResult.success === false) {
       return {
         success: false,
         error: rescheduleResult.error || "Rescheduling failed",
         message:
           rescheduleResult.error ||
+          rescheduleResult.message ||
           "Could not reschedule the appointment. Please choose another time.",
       };
     }
 
+    const updatedAppt = rescheduleResult?.appointment || rescheduleResult;
+
     return {
       success: true,
       actionType: "RESCHEDULE",
+      appointment: updatedAppt,
       message: `Your appointment has been successfully rescheduled to ${pending.payload.newDate} at ${pending.payload.newTime}.`,
     };
   }
