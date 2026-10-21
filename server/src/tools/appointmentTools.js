@@ -63,26 +63,57 @@ async function bookAppointmentTool({
 
 async function cancelAppointmentTool({
   clinicId,
+  patientId,
   appointmentId,
 }) {
-  return await cancelAppointment(
-    appointmentId,
-    clinicId
-  );
+  try {
+    const appointment = await cancelAppointment(
+      appointmentId,
+      clinicId,
+      patientId
+    );
+    return {
+      success: true,
+      message: "Appointment cancelled successfully",
+      appointment,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || "Cancellation failed",
+      message: error.message || "Cancellation failed",
+    };
+  }
 }
 
 async function rescheduleAppointmentTool({
   clinicId,
+  patientId,
   appointmentId,
   newDate,
   newTime,
 }) {
-  return await rescheduleAppointment(
-    appointmentId,
-    newDate,
-    newTime,
-    clinicId
-  );
+  try {
+    const appointment = await rescheduleAppointment(
+      appointmentId,
+      newDate,
+      newTime,
+      clinicId,
+      patientId
+    );
+    return {
+      success: true,
+      message: "Appointment rescheduled successfully",
+      appointment,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || "Rescheduling failed",
+      message: error.message || "Rescheduling failed",
+      alternatives: error.alternatives,
+    };
+  }
 }
 
 async function findPatientAppointmentTool({
