@@ -6,6 +6,7 @@ const {
   createAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  updateAppointmentStatus,
 } = require("./appointmentService");
 
 async function checkAvailabilityController(req, res) {
@@ -412,11 +413,69 @@ function getTimeSlotsController(req, res) {
   }
 }
 
+async function updateAppointmentStatusController(req, res) {
+  try {
+    const appointmentId = Number(req.params.id);
+    const { status } = req.body;
+
+    if (!Number.isInteger(appointmentId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid appointment ID",
+      });
+    }
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "status is required",
+      });
+    }
+
+    const appointment = await updateAppointmentStatus(
+      appointmentId,
+      status,
+      req.clinicId
+    );
+
+    return res.json({
+      success: true,
+      message: `Appointment marked as ${appointment.status}`,
+      appointment,
+    });
+  } catch (error) {
+    console.error("Update appointment status error:", error);
+
+    if (error.message === "Appointment not found") {
+      return res.status(404).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    if (
+      error.message?.includes("Invalid appointment status") ||
+      error.message?.includes("Cannot change status")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update appointment status",
+    });
+  }
+}
+
 module.exports = {
   checkAvailabilityController,
   createAppointmentController,
   cancelAppointmentController,
   rescheduleAppointmentController,
+  updateAppointmentStatusController,
   getAppointmentsController,
   getAppointmentByIdController,
   getTimeSlotsController,

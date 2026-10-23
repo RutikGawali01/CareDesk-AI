@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Users, Plus, Search, Phone, Mail, Calendar, X, ChevronRight } from "lucide-react";
 import { api } from "../../services/api";
+import { useNavigation } from "../../context/NavigationContext";
 
 export function Patients({ 
   patients, 
@@ -9,7 +10,8 @@ export function Patients({
   isPatientModalOpen, 
   onClosePatientModal 
 }) {
-  const [searchTerm, setSearchTerm] = useState("");
+  const { patientState, updatePatientState } = useNavigation();
+  const searchTerm = patientState.search || "";
   const [selectedPatient, setSelectedPatient] = useState(null);
 
   // New Patient Form State
@@ -53,10 +55,10 @@ export function Patients({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <h2 style={{ fontSize: "1.4rem", fontWeight: "800", color: "#0f172a" }}>
-            Patient Records Registry
+            Hospital Patient Directory
           </h2>
           <p style={{ color: "#64748b", fontSize: "0.85rem", marginTop: "2px" }}>
-            Manage registered clinic patients and view medical visit history
+            Manage registered hospital patients and view visit histories
           </p>
         </div>
 
@@ -76,7 +78,7 @@ export function Patients({
             className="form-input"
             style={{ paddingLeft: "36px" }}
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => updatePatientState({ search: e.target.value })}
           />
         </div>
       </div>

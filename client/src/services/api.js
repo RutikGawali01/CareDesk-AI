@@ -105,6 +105,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  updateAppointmentStatus: (id, status) =>
+    request(`/appointments/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
   // ==========================================
   // DOCTORS
   // ==========================================

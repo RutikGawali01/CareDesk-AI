@@ -69,10 +69,10 @@ export function RegisterClinic({ onRegisterSuccess }) {
       {/* Header text */}
       <div style={{ marginBottom: "20px" }}>
         <h3 style={{ fontSize: "1.4rem", fontWeight: "800", color: "#0f172a", marginBottom: "6px" }}>
-          Register your Clinic Account
+          Register your Hospital Account
         </h3>
         <p style={{ fontSize: "0.86rem", color: "#64748b" }}>
-          Create a new clinic profile and admin account to get started in minutes.
+          Create a new hospital profile and admin account to get started in minutes.
         </p>
       </div>
 
@@ -119,12 +119,12 @@ export function RegisterClinic({ onRegisterSuccess }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <Building size={14} color="#0284c7" /> Clinic Name *
+              <Building size={14} color="#0284c7" /> Hospital Name *
             </label>
             <input
               type="text"
               className="form-input"
-              placeholder="CareDesk Demo Clinic"
+              placeholder="City General Hospital"
               value={clinicName}
               onChange={(e) => setClinicName(e.target.value)}
               disabled={loading}
@@ -191,7 +191,7 @@ export function RegisterClinic({ onRegisterSuccess }) {
           gap: "10px"
         }}>
           <div style={{ fontSize: "0.72rem", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Optional Clinic Contact Info
+            Optional Hospital Contact Info
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -224,7 +224,7 @@ export function RegisterClinic({ onRegisterSuccess }) {
             <input
               type="text"
               className="form-input"
-              placeholder="Clinic Address (City, State)"
+              placeholder="Hospital Address (City, State)"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               disabled={loading}
@@ -241,11 +241,11 @@ export function RegisterClinic({ onRegisterSuccess }) {
         >
           {loading ? (
             <>
-              <RefreshCw size={18} className="spin" /> Registering Clinic...
+              <RefreshCw size={18} className="spin" /> Registering Hospital...
             </>
           ) : (
             <>
-              Register Clinic & Sign In <ArrowRight size={18} />
+              Register Hospital & Sign In <ArrowRight size={18} />
             </>
           )}
         </button>

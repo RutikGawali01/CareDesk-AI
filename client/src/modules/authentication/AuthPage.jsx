@@ -87,7 +87,7 @@ export function AuthPage({ onAuthSuccess }) {
             </div>
 
             <h2 style={{ fontSize: "1.75rem", fontWeight: "800", lineHeight: 1.25, letterSpacing: "-0.02em", color: "#f8fafc", marginBottom: "16px" }}>
-              Next-Gen Intelligent Clinic Management
+              Next-Gen Intelligent Hospital Management
             </h2>
 
             <p style={{ color: "#94a3b8", fontSize: "0.93rem", lineHeight: 1.6, marginBottom: "36px" }}>

@@ -12,14 +12,14 @@ import {
 
 export function Sidebar({ activeTab, setActiveTab }) {
   const mainNavItems = [
-    { id: "overview", label: "Overview", icon: LayoutDashboard },
+    { id: "overview", label: "Dashboard", icon: LayoutDashboard },
     { id: "appointments", label: "Appointments", icon: CalendarDays },
     { id: "doctors", label: "Doctors & Shifts", icon: UserCheck },
     { id: "patients", label: "Patients Directory", icon: Users },
   ];
 
   const aiNavItems = [
-    { id: "ai-assistant", label: "AI Receptionist Suite", icon: Bot, badge: "Sol Engine" },
+    { id: "ai-assistant", label: "Hospital Assistant AI", icon: Bot, badge: "Copilot" },
   ];
 
   return (
@@ -64,7 +64,7 @@ export function Sidebar({ activeTab, setActiveTab }) {
             color: "#0f172a",
             lineHeight: 1.1
           }}>
-            CareDesk
+            CareDesk AI
           </h1>
           <span style={{
             fontSize: "0.72rem",
@@ -75,7 +75,7 @@ export function Sidebar({ activeTab, setActiveTab }) {
             gap: "4px",
             marginTop: "2px"
           }}>
-            <Sun size={12} color="#f6b40e" fill="#f6b40e" /> AI Receptionist Clinic
+            <Sun size={12} color="#f6b40e" fill="#f6b40e" /> AI Hospital Receptionist
           </span>
         </div>
       </div>

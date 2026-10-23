@@ -5,6 +5,7 @@ const {
   createAppointmentController,
   cancelAppointmentController,
   rescheduleAppointmentController,
+  updateAppointmentStatusController,
   getAppointmentsController,
   getAppointmentByIdController,
   getTimeSlotsController,
@@ -19,10 +20,13 @@ router.get("/slots", requireAuth, getTimeSlotsController);
 router.get("/:id", requireAuth, getAppointmentByIdController);
 
 // Create appointment
-router.post("/", requireAuth,createAppointmentController);
+router.post("/", requireAuth, createAppointmentController);
 
 // Check availability
 router.post("/check-availability", requireAuth, checkAvailabilityController);
+
+// Update status (e.g. COMPLETED, NO_SHOW, CONFIRMED)
+router.patch("/:id/status", requireAuth, updateAppointmentStatusController);
 
 // Cancel appointment
 router.patch("/:id/cancel", requireAuth, cancelAppointmentController);

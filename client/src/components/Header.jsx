@@ -98,7 +98,7 @@ export function Header({
           onClick={onOpenAI}
         >
           <Bot size={17} />
-          Ask AI Receptionist
+          Admin Copilot
         </button>
 
         {/* User Profile Pill & Logout */}
@@ -137,7 +137,7 @@ export function Header({
               </div>
               <div>
                 <div style={{ fontWeight: "700", color: "#0f172a", lineHeight: 1.1 }}>
-                  {admin.name || "Clinic Admin"}
+                  {admin.name || "Hospital Admin"}
                 </div>
               </div>
             </div>
