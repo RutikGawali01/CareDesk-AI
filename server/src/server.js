@@ -18,6 +18,7 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "https://caredesk-xi.vercel.app",
 ];
 
 app.use(
