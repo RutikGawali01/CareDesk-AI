@@ -16,14 +16,29 @@ export function formatDoctorName(name) {
 }
 
 /**
- * Format date consistently across the dashboard (e.g., "Oct 24, 2026").
+ * Format date consistently across the dashboard (e.g., "Sun, Oct 25, 2026").
+ * Prevents UTC midnight shift across western timezones.
  */
-export function formatDate(dateString) {
+export function formatDate(dateString, { includeWeekday = false } = {}) {
   if (!dateString) return "N/A";
   try {
+    const datePart = typeof dateString === "string" ? dateString.split("T")[0] : null;
+    if (datePart && /^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+      const [year, month, day] = datePart.split("-").map(Number);
+      const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      return d.toLocaleDateString("en-US", {
+        timeZone: "UTC",
+        weekday: includeWeekday ? "short" : undefined,
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    }
     const d = new Date(dateString);
     if (isNaN(d.getTime())) return dateString;
     return d.toLocaleDateString("en-US", {
+      timeZone: "Asia/Kolkata",
+      weekday: includeWeekday ? "short" : undefined,
       month: "short",
       day: "numeric",
       year: "numeric",
@@ -31,6 +46,19 @@ export function formatDate(dateString) {
   } catch {
     return dateString;
   }
+}
+
+/**
+ * Returns today's formatted hospital date (e.g. "Sun, Oct 25, 2026").
+ */
+export function getTodayFormatted() {
+  return new Date().toLocaleDateString("en-US", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 /**

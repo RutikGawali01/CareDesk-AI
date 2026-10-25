@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { api } from "../../services/api";
 import { MORNING_SLOTS, EVENING_SLOTS, formatSlotLabel } from "../../constants/timeSlots";
-import { formatDoctorName, getStatusConfig } from "../../utils/formatters";
+import { formatDoctorName, getStatusConfig, getTodayFormatted } from "../../utils/formatters";
 
 export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenNewAppointment, onOpenAI }) {
   const [checkDoctorId, setCheckDoctorId] = useState("");
@@ -26,6 +26,8 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
   const [checkTime, setCheckTime] = useState("10:00");
   const [checkResult, setCheckResult] = useState(null);
   const [checking, setChecking] = useState(false);
+
+  const todayDisplay = getTodayFormatted();
 
   const stats = dashboardData?.stats || {
     totalPatients: 0,
@@ -87,12 +89,26 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
             <span style={{ fontSize: "0.82rem", fontWeight: "800", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.05em" }}>
               CareDesk AI Hospital Management Hub
             </span>
+            <span style={{
+              fontSize: "0.75rem",
+              fontWeight: "700",
+              color: "#0284c7",
+              background: "#ffffff",
+              padding: "2px 8px",
+              borderRadius: "99px",
+              border: "1px solid #bae6fd",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "4px"
+            }}>
+              <Calendar size={11} /> {todayDisplay}
+            </span>
           </div>
           <h2 style={{ fontSize: "1.55rem", fontWeight: "800", color: "#0f172a" }}>
             Hospital Reception & Schedule Dashboard
           </h2>
           <p style={{ color: "#475569", fontSize: "0.9rem", marginTop: "4px" }}>
-            Real-time schedule operations, patient attendance tracking, and administrative AI Copilot.
+            Live schedule operations for <strong style={{ color: "#0284c7" }}>{todayDisplay}</strong>, attendance tracking, and administrative AI Copilot.
           </p>
         </div>
 

@@ -4,18 +4,25 @@ async function getDashboard(req, res) {
   try {
     const clinicId = req.clinicId;
 
-    // Get today's date in UTC
+    // Get today's date in hospital timezone (Asia/Kolkata)
     const now = new Date();
-    const today = new Date(now);
-    today.setUTCHours(0, 0, 0, 0);
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(now);
+    const dateMap = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+    const todayStr = `${dateMap.year}-${dateMap.month}-${dateMap.day}`;
 
+    const today = new Date(`${todayStr}T00:00:00.000Z`);
     const tomorrow = new Date(today);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 
-    const currentHours =
-      String(now.getUTCHours()).padStart(2, "0") +
-      ":" +
-      String(now.getUTCMinutes()).padStart(2, "0");
+    const currentHours = `${dateMap.hour}:${dateMap.minute}`;
 
     const [
       totalPatients,
@@ -187,6 +194,7 @@ async function getDashboard(req, res) {
         todayCount,
         upcomingCount,
         attendancePendingCount,
+        todayDate: todayStr,
       },
       todaysAppointments: enrichedTodaysAppointments,
     });
