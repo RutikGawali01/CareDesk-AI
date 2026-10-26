@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { Stethoscope, Phone, Mail, Clock, Plus, Search, X, UserPlus, CheckCircle2 } from "lucide-react";
 import { api } from "../../services/api";
+import { formatDoctorName } from "../../utils/formatters";
+import { useNavigation } from "../../context/NavigationContext";
 
 const SPECIALIZATIONS = [
   "General Physician",
@@ -26,7 +28,8 @@ export function Doctors({
 }) {
   const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   
-  const [searchTerm, setSearchTerm] = useState("");
+  const { doctorState, updateDoctorState } = useNavigation();
+  const searchTerm = doctorState.search || "";
   const [internalModalOpen, setInternalModalOpen] = useState(false);
 
   // Form states
@@ -114,21 +117,16 @@ export function Doctors({
     }
   };
 
-  const formatDoctorName = (docName) => {
-    if (!docName) return "Dr. Specialist";
-    return docName.toLowerCase().startsWith("dr.") ? docName : `Dr. ${docName}`;
-  };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
       {/* Header Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
         <div>
           <h2 style={{ fontSize: "1.4rem", fontWeight: "800", color: "#0f172a" }}>
-            Doctors Directory & Shift Schedules
+            Hospital Doctors & Shift Schedules
           </h2>
           <p style={{ color: "#64748b", fontSize: "0.85rem", marginTop: "2px" }}>
-            Manage attending clinic specialists, contact info, working hours, and bookings
+            Manage attending hospital specialists, contact info, working hours, and bookings
           </p>
         </div>
 
@@ -148,7 +146,7 @@ export function Doctors({
             className="form-input"
             style={{ paddingLeft: "36px" }}
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => updateDoctorState({ search: e.target.value })}
           />
         </div>
       </div>

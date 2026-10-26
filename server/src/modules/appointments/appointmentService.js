@@ -171,7 +171,7 @@ async function checkAvailability(
         clinicId: Number(clinicId),
         doctorId: Number(doctorId),
         appointmentDate: date,
-        status: "BOOKED",
+        status: { in: ["BOOKED", "CONFIRMED"] },
         ...(excludeAppointmentId ? { id: { not: Number(excludeAppointmentId) } } : {}),
       },
       select: {
@@ -380,13 +380,15 @@ async function createAppointment({
 
 async function cancelAppointment(
   appointmentId,
-  clinicId
+  clinicId,
+  patientId = null
 ) {
   const appointment =
     await prisma.appointment.findFirst({
       where: {
         id: Number(appointmentId),
         clinicId: Number(clinicId),
+        ...(patientId !== null && { patientId: Number(patientId) }),
       },
     });
 
@@ -421,13 +423,15 @@ async function rescheduleAppointment(
   appointmentId,
   newDate,
   newTime,
-  clinicId
+  clinicId,
+  patientId = null
 ) {
   const appointment =
     await prisma.appointment.findFirst({
       where: {
         id: Number(appointmentId),
         clinicId: Number(clinicId),
+        ...(patientId !== null && { patientId: Number(patientId) }),
       },
     });
 
@@ -436,10 +440,11 @@ async function rescheduleAppointment(
   }
 
   if (
-    appointment.status !== "BOOKED"
+    appointment.status !== "BOOKED" &&
+    appointment.status !== "CONFIRMED"
   ) {
     throw new Error(
-      "Only booked appointments can be rescheduled"
+      "Only booked or confirmed appointments can be rescheduled"
     );
   }
 
@@ -542,6 +547,62 @@ async function findPatientAppointment({
 }
 
 // --------------------------------------------------
+// UPDATE APPOINTMENT STATUS (ATTENDANCE & CONFIRMATION)
+// --------------------------------------------------
+
+const VALID_APPOINTMENT_STATUSES = [
+  "BOOKED",
+  "CONFIRMED",
+  "COMPLETED",
+  "NO_SHOW",
+  "CANCELLED",
+];
+
+async function updateAppointmentStatus(
+  appointmentId,
+  status,
+  clinicId,
+  patientId = null
+) {
+  const normalizedStatus = String(status || "").trim().toUpperCase();
+
+  if (!VALID_APPOINTMENT_STATUSES.includes(normalizedStatus)) {
+    throw new Error(
+      `Invalid appointment status: ${status}. Allowed: ${VALID_APPOINTMENT_STATUSES.join(", ")}`
+    );
+  }
+
+  const appointment = await prisma.appointment.findFirst({
+    where: {
+      id: Number(appointmentId),
+      clinicId: Number(clinicId),
+      ...(patientId !== null && { patientId: Number(patientId) }),
+    },
+  });
+
+  if (!appointment) {
+    throw new Error("Appointment not found");
+  }
+
+  if (appointment.status === "CANCELLED" && normalizedStatus !== "CANCELLED") {
+    throw new Error("Cannot change status of a cancelled appointment");
+  }
+
+  return prisma.appointment.update({
+    where: {
+      id: Number(appointmentId),
+    },
+    data: {
+      status: normalizedStatus,
+    },
+    include: {
+      patient: true,
+      doctor: true,
+    },
+  });
+}
+
+// --------------------------------------------------
 // EXPORTS
 // --------------------------------------------------
 
@@ -551,5 +612,7 @@ module.exports = {
   createAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  updateAppointmentStatus,
   findPatientAppointment,
+  VALID_APPOINTMENT_STATUSES,
 };

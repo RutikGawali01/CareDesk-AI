@@ -1,0 +1,97 @@
+const express = require("express");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+
+const patientRoutes = require("./modules/patients/patientRoutes");
+const appointmentRoutes = require("./modules/appointments/appointmentRoutes");
+const doctorRoutes = require("./modules/doctors/doctorRoutes");
+const dashboardRoutes = require("./modules/dashboard/dashboardRoutes");
+const aiRoutes = require("./modules/ai/aiRoutes");
+const authRoutes = require("./modules/authentication/authRoutes");
+const whatsappRoutes = require("./modules/whatsapp/whatsappRoutes");
+
+const app = express();
+
+// ===============================
+// CORS CONFIGURATION
+// ===============================
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://caredesk-xi.vercel.app",
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests without an origin
+      // such as curl/Postman
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
+
+// ===============================
+// MIDDLEWARE
+// ===============================
+
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      if (req.originalUrl.split("?")[0] === "/api/whatsapp/webhook") {
+        req.rawBody = Buffer.from(buf);
+      }
+    },
+  })
+);
+app.use(cookieParser());
+
+// ===============================
+// HEALTH CHECK ENDPOINT
+// ===============================
+
+const healthHandler = (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+};
+
+app.get("/api/health", healthHandler);
+app.get("/health", healthHandler);
+
+// ===============================
+// ROUTES
+// ===============================
+
+app.use("/api/auth", authRoutes);
+app.use("/api/patients", patientRoutes);
+app.use("/api/appointments", appointmentRoutes);
+app.use("/api/doctors", doctorRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/ai", aiRoutes);
+app.use("/api/whatsapp", whatsappRoutes);
+
+// ===============================
+// ERROR HANDLING MIDDLEWARE
+// ===============================
+
+app.use((err, req, res, next) => {
+  const statusCode = err.status || err.statusCode || 500;
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || "Internal server error",
+  });
+});
+
+module.exports = app;

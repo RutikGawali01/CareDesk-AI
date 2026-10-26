@@ -11,12 +11,29 @@ export function Header({
   admin,
   onLogout
 }) {
-  const [time, setTime] = useState(new Date().toLocaleTimeString());
-  const [date, setDate] = useState(new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
+  const getHospitalDateTime = () => {
+    const now = new Date();
+    const dateFormatted = now.toLocaleDateString("en-US", {
+      timeZone: "Asia/Kolkata",
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const timeFormatted = now.toLocaleTimeString("en-US", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    return { dateFormatted, timeFormatted };
+  };
+
+  const [dateTime, setDateTime] = useState(() => getHospitalDateTime());
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setTime(new Date().toLocaleTimeString());
+      setDateTime(getHospitalDateTime());
     }, 1000);
     return () => clearInterval(timer);
   }, []);
@@ -52,9 +69,9 @@ export function Header({
           border: "1px solid #bae6fd"
         }}>
           <Clock size={15} color="#0284c7" />
-          <span>{date}</span>
+          <span>{dateTime.dateFormatted}</span>
           <span style={{ color: "#cbd5e1" }}>|</span>
-          <span style={{ fontFamily: "var(--font-mono)", color: "#0369a1", fontWeight: "700" }}>{time}</span>
+          <span style={{ fontFamily: "var(--font-mono)", color: "#0369a1", fontWeight: "700" }}>{dateTime.timeFormatted}</span>
         </div>
 
         <button 
@@ -98,7 +115,7 @@ export function Header({
           onClick={onOpenAI}
         >
           <Bot size={17} />
-          Ask AI Receptionist
+          Admin Copilot
         </button>
 
         {/* User Profile Pill & Logout */}
@@ -137,7 +154,7 @@ export function Header({
               </div>
               <div>
                 <div style={{ fontWeight: "700", color: "#0f172a", lineHeight: 1.1 }}>
-                  {admin.name || "Clinic Admin"}
+                  {admin.name || "Hospital Admin"}
                 </div>
               </div>
             </div>

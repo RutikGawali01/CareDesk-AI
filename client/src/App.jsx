@@ -12,14 +12,14 @@ import { Footer } from "./components/Footer";
 import { api } from "./services/api";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import PrivacyPolicy from "./PrivacyPolicy";
+import { useNavigation } from "./context/NavigationContext";
+
 export default function App() {
-  
-  const [activeTab, setActiveTab] = useState("overview");
+  const { activeTab, navigate, isCopilotOpen, toggleCopilot } = useNavigation();
 
   // ==========================================
   // AUTHENTICATION STATE
   // ==========================================
-  
 
   const [admin, setAdmin] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -45,7 +45,6 @@ export default function App() {
   const [isBookModalOpen, setIsBookModalOpen] = useState(false);
   const [isPatientModalOpen, setIsPatientModalOpen] = useState(false);
   const [isDoctorModalOpen, setIsDoctorModalOpen] = useState(false);
-  const [isAIWidgetOpen, setIsAIWidgetOpen] = useState(false);
 
   // ==========================================
   // CHECK AUTHENTICATION
@@ -133,9 +132,15 @@ export default function App() {
     } catch (err) {
       console.error("Fetch Data Error:", err);
 
-      setError(
-        "Unable to connect to Express backend server on port 5001. Please ensure the backend is running."
-      );
+      if (err.status === 401) {
+        setIsAuthenticated(false);
+        setAdmin(null);
+        setError("Your session has expired. Please sign in again.");
+      } else {
+        setError(
+          "Unable to connect to Express backend server on port 5001. Please ensure the backend is running."
+        );
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -211,7 +216,7 @@ export default function App() {
       {/* Sidebar Navigation */}
       <Sidebar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={navigate}
       />
 
       {/* Main App Container */}
@@ -224,19 +229,19 @@ export default function App() {
       >
         {/* Sticky Top Header */}
         <Header
-          onOpenNewAppointment={() =>
-            setIsBookModalOpen(true)
-          }
-          onOpenNewPatient={() =>
-            setIsPatientModalOpen(true)
-          }
+          onOpenNewAppointment={() => {
+            navigate("appointments");
+            setIsBookModalOpen(true);
+          }}
+          onOpenNewPatient={() => {
+            navigate("patients");
+            setIsPatientModalOpen(true);
+          }}
           onOpenNewDoctor={() => {
-            setActiveTab("doctors");
+            navigate("doctors");
             setIsDoctorModalOpen(true);
           }}
-          onOpenAI={() =>
-            setIsAIWidgetOpen(true)
-          }
+          onOpenAI={() => toggleCopilot(true)}
           onRefresh={() => fetchData(false)}
           isRefreshing={refreshing}
           admin={admin}
@@ -315,7 +320,7 @@ export default function App() {
                   fontSize: "1.1rem",
                 }}
               >
-                Loading CareDesk Clinic Dashboard...
+                Loading CareDesk Hospital Dashboard...
               </div>
             </div>
           ) : (
@@ -325,13 +330,12 @@ export default function App() {
                   dashboardData={dashboardData}
                   doctors={doctors}
                   patients={patients}
-                  onNavigate={setActiveTab}
-                  onOpenNewAppointment={() =>
-                    setIsBookModalOpen(true)
-                  }
-                  onOpenAI={() =>
-                    setIsAIWidgetOpen(true)
-                  }
+                  onNavigate={navigate}
+                  onOpenNewAppointment={() => {
+                    navigate("appointments");
+                    setIsBookModalOpen(true);
+                  }}
+                  onOpenAI={() => toggleCopilot(true)}
                 />
               )}
 
@@ -341,13 +345,9 @@ export default function App() {
                   doctors={doctors}
                   patients={patients}
                   onRefresh={() => fetchData(true)}
-                  onOpenBookModal={() =>
-                    setIsBookModalOpen(true)
-                  }
+                  onOpenBookModal={() => setIsBookModalOpen(true)}
                   isBookModalOpen={isBookModalOpen}
-                  onCloseBookModal={() =>
-                    setIsBookModalOpen(false)
-                  }
+                  onCloseBookModal={() => setIsBookModalOpen(false)}
                 />
               )}
 
@@ -355,13 +355,9 @@ export default function App() {
                 <Doctors
                   doctors={doctors}
                   onRefresh={() => fetchData(true)}
-                  onOpenDoctorModal={() =>
-                    setIsDoctorModalOpen(true)
-                  }
+                  onOpenDoctorModal={() => setIsDoctorModalOpen(true)}
                   isDoctorModalOpen={isDoctorModalOpen}
-                  onCloseDoctorModal={() =>
-                    setIsDoctorModalOpen(false)
-                  }
+                  onCloseDoctorModal={() => setIsDoctorModalOpen(false)}
                 />
               )}
 
@@ -369,21 +365,15 @@ export default function App() {
                 <Patients
                   patients={patients}
                   onRefresh={() => fetchData(true)}
-                  onOpenPatientModal={() =>
-                    setIsPatientModalOpen(true)
-                  }
+                  onOpenPatientModal={() => setIsPatientModalOpen(true)}
                   isPatientModalOpen={isPatientModalOpen}
-                  onClosePatientModal={() =>
-                    setIsPatientModalOpen(false)
-                  }
+                  onClosePatientModal={() => setIsPatientModalOpen(false)}
                 />
               )}
 
               {activeTab === "ai-assistant" && (
                 <AIAssistantPage
-                  onRefreshData={() =>
-                    fetchData(true)
-                  }
+                  onRefreshData={() => fetchData(true)}
                 />
               )}
 
@@ -393,13 +383,11 @@ export default function App() {
         </main>
       </div>
 
-      {/* Floating AI Receptionist Widget */}
+      {/* Floating Hospital Assistant / Admin Copilot Drawer */}
       <AIChatWidget
-        isOpen={isAIWidgetOpen}
-        onClose={() => setIsAIWidgetOpen(false)}
-        onRefreshData={() =>
-          fetchData(true)
-        }
+        isOpen={isCopilotOpen}
+        onClose={() => toggleCopilot(false)}
+        onRefreshData={() => fetchData(true)}
       />
     </div>
   );

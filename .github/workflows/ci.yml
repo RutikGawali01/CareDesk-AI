@@ -40,7 +40,7 @@ jobs:
         run: npm run build
 
   backend-ci:
-    name: Backend Dependency Check
+    name: Backend Test and Verification
     runs-on: ubuntu-latest
 
     defaults:
@@ -60,6 +60,9 @@ jobs:
 
       - name: Install backend dependencies
         run: npm ci
+
+      - name: Run backend tests
+        run: npm test
 
       - name: Verify backend entry point
         run: node --check src/server.js

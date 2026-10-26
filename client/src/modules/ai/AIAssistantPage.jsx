@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Bot, Send, RefreshCw, Terminal, ArrowRight, Zap, Sun } from "lucide-react";
+import { Bot, Send, RefreshCw, Terminal, ArrowRight, Zap, Sun, ShieldCheck, Trash2 } from "lucide-react";
 import { api } from "../../services/api";
 
 export function AIAssistantPage({ onRefreshData }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      content: "Hello! I am Riya, your AI Clinic Receptionist powered by OpenRouter Gemini function-calling.\n\nI can autonomously execute database tools like checking doctor shifts, booking slots, suggesting alternative times, rescheduling, and cancelling appointments. How can I assist you today?"
+      content: "Hello! I am your CareDesk AI Hospital Operations Copilot.\n\nI assist hospital staff in analyzing appointment schedules, verifying doctor availability, querying patient appointments, and staging updates.\n\nHow can I help you manage hospital operations today?"
     }
   ]);
   const [inputMessage, setInputMessage] = useState("");
@@ -21,8 +21,8 @@ export function AIAssistantPage({ onRefreshData }) {
   }, [messages, loading]);
 
   const handleSendMessage = async (textToSend) => {
-    const query = textToSend || inputMessage;
-    if (!query.trim() || loading) return;
+    const query = (textToSend || inputMessage).trim();
+    if (!query || loading) return;
 
     const userMsg = { role: "user", content: query };
     setMessages((prev) => [...prev, userMsg]);
@@ -59,33 +59,33 @@ export function AIAssistantPage({ onRefreshData }) {
     setMessages([
       {
         role: "assistant",
-        content: "Conversation history cleared. Ready for a new receptionist interaction!"
+        content: "Conversation history cleared. Ready for a new hospital administration session!"
       }
     ]);
     setHistory([]);
     setToolLogs([]);
   };
 
-  const testScenarios = [
+  const adminScenarios = [
     {
-      title: "1. Check Slot Availability",
-      prompt: "I am patient 1. Check if Dr. Smith (doctor 1) is available tomorrow at 10:00 AM.",
-      desc: "Queries doctor working hours and checks database slot collision"
+      title: "1. Today's Appointments & Attendance",
+      prompt: "Summarize today's appointment schedule and highlight any appointments requiring attendance review.",
+      desc: "Checks scheduled visits and attendance pending records"
     },
     {
-      title: "2. Book New Appointment",
-      prompt: "I am patient 1. Book an appointment tomorrow at 10:00 AM with doctor 1 for routine cleaning.",
-      desc: "Triggers book_appointment function tool"
+      title: "2. Doctor Roster & Shift Hours",
+      prompt: "List all active hospital doctors, their specializations, and their shift timings.",
+      desc: "Triggers list_doctors tool to inspect attending medical staff"
     },
     {
-      title: "3. Reschedule Appointment",
-      prompt: "I want to reschedule appointment 1 to tomorrow at 4:00 PM.",
-      desc: "Triggers reschedule_appointment tool with automatic alternative suggestions"
+      title: "3. Check Doctor Slot Availability",
+      prompt: "Check if any slots are open tomorrow afternoon between 4:00 PM and 6:00 PM.",
+      desc: "Triggers check_availability tool with conflict inspection"
     },
     {
-      title: "4. Cancel Appointment",
-      prompt: "Please cancel appointment 1 for patient 1.",
-      desc: "Triggers cancel_appointment function tool"
+      title: "4. Locate Patient Appointment",
+      prompt: "Find the upcoming appointment details for patient with phone or name.",
+      desc: "Triggers find_patient and find_patient_appointment tools"
     }
   ];
 
@@ -97,34 +97,34 @@ export function AIAssistantPage({ onRefreshData }) {
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{
               padding: "3px 10px", borderRadius: "99px",
-              background: "#fffbeb", color: "#b45309",
-              border: "1px solid #fde68a",
+              background: "#e0f2fe", color: "#0369a1",
+              border: "1px solid #bae6fd",
               fontSize: "0.75rem", fontWeight: "800",
               display: "inline-flex", alignItems: "center", gap: "4px"
             }}>
-              <Sun size={12} color="#f6b40e" fill="#f6b40e" /> OPENROUTER GEMINI ENGINE
+              <ShieldCheck size={13} color="#0284c7" /> ADMIN COPILOT ENGINE
             </span>
           </div>
           <h2 style={{ fontSize: "1.5rem", fontWeight: "800", color: "#0f172a", marginTop: "4px" }}>
-            AI Clinic Receptionist Suite
+            Hospital Assistant AI Suite
           </h2>
           <p style={{ color: "#64748b", fontSize: "0.88rem" }}>
-            Test live multi-turn conversational AI receptionist capabilities with autonomous database tool execution
+            Execute authorized hospital scheduling queries and audit automated tool calls
           </p>
         </div>
 
         <button className="btn btn-secondary" onClick={handleClearChat}>
-          <RefreshCw size={15} /> Clear History
+          <Trash2 size={15} /> Clear History
         </button>
       </div>
 
-      {/* Preset Test Scenarios Grid */}
+      {/* Preset Admin Scenarios Grid */}
       <div style={{
         display: "grid",
         gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
         gap: "14px"
       }}>
-        {testScenarios.map((sc, i) => (
+        {adminScenarios.map((sc, i) => (
           <div 
             key={i} 
             className="glass-card-interactive" 
@@ -151,7 +151,7 @@ export function AIAssistantPage({ onRefreshData }) {
               color: "#0369a1",
               fontWeight: "700"
             }}>
-              <span>Run Test Prompt</span>
+              <span>Run Query</span>
               <ArrowRight size={14} />
             </div>
           </div>
@@ -176,9 +176,9 @@ export function AIAssistantPage({ onRefreshData }) {
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#0f172a", fontWeight: "700", fontSize: "0.95rem" }}>
               <Bot size={18} color="#0284c7" />
-              Receptionist Dialogue Stream
+              Hospital Staff Copilot Stream
             </div>
-            <span className="badge badge-booked">LIVE ENDPOINT</span>
+            <span className="badge badge-booked">AUTHENTICATED</span>
           </div>
 
           <div style={{
@@ -219,7 +219,7 @@ export function AIAssistantPage({ onRefreshData }) {
                   {msg.content}
                 </div>
                 <span style={{ fontSize: "0.7rem", color: "#94a3b8", marginTop: "4px", padding: "0 6px" }}>
-                  {msg.role === "user" ? "Staff / Patient Query" : "Riya (AI Receptionist)"}
+                  {msg.role === "user" ? "Hospital Staff" : "Admin Copilot"}
                 </span>
               </div>
             ))}
@@ -227,7 +227,7 @@ export function AIAssistantPage({ onRefreshData }) {
             {loading && (
               <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#0284c7", fontSize: "0.88rem", padding: "10px" }}>
                 <RefreshCw size={16} className="spin" />
-                <span>Riya is evaluating clinic rules and calling database tools...</span>
+                <span>Copilot is querying hospital schedules and database tools...</span>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -242,7 +242,7 @@ export function AIAssistantPage({ onRefreshData }) {
           }}>
             <input 
               type="text"
-              placeholder="Type your message to the AI receptionist..."
+              placeholder="Ask the Admin Copilot about schedules, doctors, or appointments..."
               className="form-input"
               style={{ padding: "12px 16px" }}
               value={inputMessage}
@@ -266,10 +266,10 @@ export function AIAssistantPage({ onRefreshData }) {
           <div className="glass-card" style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <h3 style={{ fontSize: "0.95rem", fontWeight: "700", color: "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
               <Zap size={16} color="#0284c7" />
-              Active System Tools
+              Authorized System Tools
             </h3>
             <p style={{ fontSize: "0.78rem", color: "#64748b" }}>
-              The AI receptionist is authorized to invoke the following function calls:
+              The Hospital Assistant operates via authorized backend function tools:
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "0.78rem", fontFamily: "var(--font-mono)" }}>

@@ -20,6 +20,25 @@ const {
   listDoctorsTool,
 } = require("../../tools/doctorTools");
 
+const {
+  isExplicitConfirmation,
+  getActorKey,
+  createPendingConfirmation,
+  getPendingConfirmation,
+  claimPendingConfirmation,
+  consumePendingConfirmation,
+  markConfirmationConsumed,
+  markConfirmationFailed,
+  markConfirmationUncertain,
+  releasePendingConfirmation,
+  verifyAppointmentCommitted,
+  executeConfirmedAppointmentMutation,
+} = require("../appointments/appointmentConfirmation");
+
+function getPrisma() {
+  return require("../../db");
+}
+
 // ============================================================
 // DATE HELPERS
 // ============================================================
@@ -134,7 +153,7 @@ const checkAvailabilityFunction = {
     name: "check_availability",
 
     description:
-      "Check whether a specific doctor has an appointment slot available at the hospital on a specific date and time. Use this before booking or rescheduling.",
+      "Check whether a specific doctor has an appointment slot available. Use this ONLY when the patient explicitly asks whether a slot is free without wanting to book or reschedule yet. Do NOT use this for new bookings or rescheduling — call book_appointment or reschedule_appointment directly instead. Calling this tool does NOT stage any booking or rescheduling action and you MUST NOT ask the patient to confirm an appointment change after calling this tool alone.",
 
     parameters: {
       type: "object",
@@ -310,7 +329,7 @@ const bookAppointmentFunction = {
     name: "book_appointment",
 
     description:
-      "Book an appointment only after the doctor, patient, date and exact time are known, availability has been successfully checked, and the patient has explicitly confirmed the exact slot.",
+      "Stage a booking confirmation for an appointment. Call this when you know the doctor, patient, preferred date, and preferred time. The server will check availability and stage a pending confirmation record. The tool returns the exact details to show the patient before they confirm. Do NOT call check_availability before this — book_appointment handles availability internally. Do NOT ask the patient to confirm before calling this tool.",
 
     parameters: {
       type: "object",
@@ -421,7 +440,7 @@ const cancelAppointmentFunction = {
     name: "cancel_appointment",
 
     description:
-      "Cancel an existing appointment only after the appointment has been found and the patient has explicitly confirmed the cancellation.",
+      "Stage a cancellation confirmation for an existing appointment. Call this when you know the appointmentId from find_patient_appointment. The server will validate appointment ownership and stage a pending cancellation record. Do NOT ask the patient to confirm before calling this tool.",
 
     parameters: {
       type: "object",
@@ -431,6 +450,12 @@ const cancelAppointmentFunction = {
           type: "integer",
           description:
             "Internal appointment ID obtained from find_patient_appointment. Never invent this ID.",
+        },
+
+        patientId: {
+          type: "integer",
+          description:
+            "Optional internal patient ID obtained from find_patient.",
         },
       },
 
@@ -450,7 +475,7 @@ const rescheduleAppointmentFunction = {
     name: "reschedule_appointment",
 
     description:
-      "Reschedule an existing appointment only after the existing appointment has been found, the new slot has been checked for availability, and the patient has explicitly confirmed the new slot.",
+      "Stage a reschedule confirmation for an existing appointment. Call this when you know the appointmentId, newDate, and newTime. The server will check availability for the new slot, validate appointment ownership, and stage a pending confirmation record. The tool returns the exact details to show the patient before they confirm. Do NOT call check_availability before this — reschedule_appointment handles availability internally. Do NOT ask the patient to confirm before calling this tool.",
 
     parameters: {
       type: "object",
@@ -472,6 +497,12 @@ const rescheduleAppointmentFunction = {
           type: "string",
           description:
             "New appointment start time in HH:MM 24-hour format.",
+        },
+
+        patientId: {
+          type: "integer",
+          description:
+            "Optional internal patient ID obtained from find_patient.",
         },
       },
 
@@ -512,6 +543,27 @@ const tools = [
 // AI SERVICE
 // ============================================================
 
+async function getVerifiedPatientForPhone(phone, clinicId, db) {
+  if (db?.patient?.findFirst) {
+    try {
+      const p = await db.patient.findFirst({
+        where: {
+          phone: String(phone),
+          clinicId: Number(clinicId),
+        },
+      });
+      if (p) {
+        return { found: true, patient: p };
+      }
+    } catch {}
+  }
+  try {
+    return await findPatientTool({ phone, clinicId });
+  } catch {
+    return null;
+  }
+}
+
 async function askAI(
   message,
   previousMessages = [],
@@ -519,10 +571,25 @@ async function askAI(
   clinicId,
   {
     callerPhone,
+    adminId,
     preserveToolHistory = false,
     allowAppointmentChanges = allowBooking,
+    db = getPrisma(),
+    chatCompletionFn = createChatCompletion,
+    confirmationServices = {},
   } = {}
 ) {
+  const checkAvailability = confirmationServices.checkAvailability
+    ? async ({ doctorId, appointmentDate, startTime, clinicId, excludeAppointmentId }) => {
+        return await confirmationServices.checkAvailability(
+          Number(doctorId),
+          appointmentDate,
+          startTime,
+          Number(clinicId),
+          excludeAppointmentId ? Number(excludeAppointmentId) : null
+        );
+      }
+    : checkAvailabilityTool;
   // ==========================================================
   // BASIC VALIDATION
   // ==========================================================
@@ -535,6 +602,210 @@ async function askAI(
 
   if (!message || typeof message !== "string") {
     throw new Error("A valid message is required.");
+  }
+
+  // ==========================================================
+  // RESOLVE ACTOR KEY FOR CONFIRMATIONS
+  // ==========================================================
+
+  let actorKey = null;
+  try {
+    actorKey = getActorKey({ clinicId, callerPhone, adminId });
+  } catch {
+    // If context lacks trusted identity, actorKey remains null.
+  }
+
+  // ==========================================================
+  // SERVER-SIDE CONFIRMATION EXECUTION
+  // ==========================================================
+  // A standalone explicit confirmation is handled strictly server-side.
+  // It MUST NOT continue into the LLM/tool loop under any circumstances.
+  if (isExplicitConfirmation(message)) {
+    if (!actorKey) {
+      const reply =
+        "A trusted confirmation identity is required to confirm appointments. Please authenticate or contact the hospital.";
+      return {
+        response: reply,
+        messages: [
+          ...previousMessages,
+          { role: "user", content: message },
+          { role: "assistant", content: reply },
+        ],
+      };
+    }
+
+    const pending = await getPendingConfirmation(actorKey, db);
+    if (pending) {
+      const claimed = await claimPendingConfirmation(pending.id, actorKey, db);
+      if (!claimed) {
+        const reply =
+          "This confirmation request has already been processed or expired. Please let me know what you would like to do.";
+        return {
+          response: reply,
+          messages: [
+            ...previousMessages,
+            { role: "user", content: message },
+            { role: "assistant", content: reply },
+          ],
+        };
+      }
+
+      let patientId = pending.patientId;
+      if (callerPhone) {
+        try {
+          const verifiedPatient = await getVerifiedPatientForPhone(callerPhone, clinicId, db);
+          if (verifiedPatient?.found && verifiedPatient?.patient?.id) {
+            patientId = verifiedPatient.patient.id;
+          }
+        } catch {
+          // If patient lookup tool throws (e.g. offline mock db), keep pending.patientId
+        }
+      }
+
+      let execution;
+      try {
+        execution = await executeConfirmedAppointmentMutation({
+          pending,
+          clinicId,
+          patientId,
+          allowBooking,
+          allowAppointmentChanges,
+          services: confirmationServices,
+        });
+      } catch (err) {
+        execution = {
+          success: false,
+          mutationException: true,
+          error: err.message,
+          message:
+            "There was a system interruption while finalizing your appointment. To prevent duplicate bookings, please check your appointment status or contact the clinic before trying again.",
+        };
+      }
+
+      if (execution.success) {
+        await markConfirmationConsumed(pending.id, actorKey, db);
+      } else if (execution.preMutationException) {
+        // Safe to release back to PENDING if unexpired because mutation was never called
+        await releasePendingConfirmation(pending.id, actorKey, db);
+      } else if (execution.mutationException) {
+        // Uncertain outcome! Do NOT blindly reset to PENDING.
+        // Check whether the database actually committed the appointment.
+        const committed = await verifyAppointmentCommitted({
+          pending,
+          clinicId,
+          patientId,
+          db,
+        });
+        if (committed) {
+          await markConfirmationConsumed(pending.id, actorKey, db);
+          const successMsg =
+            pending.actionType === "BOOK"
+              ? `Your appointment on ${pending.payload.appointmentDate} at ${pending.payload.startTime} has been successfully confirmed and booked.`
+              : pending.actionType === "RESCHEDULE"
+              ? `Your appointment has been successfully rescheduled to ${pending.payload.newDate} at ${pending.payload.newTime}.`
+              : "Your appointment has been successfully cancelled.";
+          execution = { success: true, message: successMsg };
+        } else {
+          // Cannot verify commit: record UNCERTAIN, never reset to PENDING
+          await markConfirmationUncertain(pending.id, actorKey, execution.error, db);
+        }
+      } else {
+        // Availability failure or mutation failed cleanly
+        await markConfirmationFailed(pending.id, actorKey, execution.error, db);
+      }
+
+      return {
+        response: execution.message,
+        messages: [
+          ...previousMessages,
+          { role: "user", content: message },
+          { role: "assistant", content: execution.message },
+        ],
+      };
+    } else {
+      // Check if there was an expired, consumed, failed, or uncertain record to give immediate clear feedback
+      try {
+        const recent = await db.appointmentConfirmation.findUnique({
+          where: { actorKey },
+        });
+        if (recent && recent.status === "CONSUMED") {
+          const reply = "This appointment confirmation has already been processed.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "PROCESSING") {
+          const reply =
+            "Your confirmation request is currently being processed. Please wait a moment.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "UNCERTAIN") {
+          const reply =
+            "Your previous appointment confirmation status is uncertain due to a system interruption. To prevent duplicate bookings, please verify your appointments with the clinic before trying again.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "FAILED") {
+          const failureReason = recent.payload?.failureReason || "";
+          const reply = failureReason.toLowerCase().includes("available")
+            ? "That appointment slot is no longer available. Please select another time."
+            : "This appointment request could not be completed. Please let me know what you would like to do.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+        if (recent && recent.status === "EXPIRED") {
+          const reply =
+            "Your confirmation window has expired. Confirmations are valid for 5 minutes. Please let me know which appointment you would like to book.";
+          return {
+            response: reply,
+            messages: [
+              ...previousMessages,
+              { role: "user", content: message },
+              { role: "assistant", content: reply },
+            ],
+          };
+        }
+      } catch (err) {
+        console.error("[AI] Error querying recent confirmation status:", err?.message);
+      }
+
+      // Standalone confirmation with no active, consumed, or expired pending record.
+      // Return a clean response and NEVER fall through into the LLM/tool loop.
+      const reply =
+        "There is no pending appointment awaiting confirmation. How can I help you today?";
+      return {
+        response: reply,
+        messages: [
+          ...previousMessages,
+          { role: "user", content: message },
+          { role: "assistant", content: reply },
+        ],
+      };
+    }
   }
 
   // ==========================================================
@@ -634,10 +905,45 @@ Never invent or change this phone number.
 `
     : "";
 
+  const isAdminUser = Boolean(adminId && !callerPhone);
+
   const systemMessage = {
     role: "system",
 
-    content: `
+    content: isAdminUser
+      ? `
+You are CareDesk AI Hospital Copilot, an intelligent assistant designed for hospital administrators, receptionists, and medical staff operating CareDesk AI.
+
+You assist staff with managing the hospital appointment system, checking schedules, looking up doctors, verifying slot availability, locating patient appointments, and navigating the dashboard.
+
+============================================================
+ROLE & BEHAVIOR (ADMIN COPILOT)
+============================================================
+- The user conversing with you is an authenticated hospital administrator or receptionist — NOT a patient seeking an appointment for themselves.
+- NEVER ask the administrator "May I know your name?" or assume they are a patient.
+- Provide direct, professional, clear, and actionable answers.
+- When asked about schedules, doctors, or appointment counts, provide clear summaries.
+- When navigating the dashboard, refer them to the appropriate sections (Dashboard, Appointments, Doctors, Patients).
+- You have backend tools to find doctors (find_doctor, list_doctors), check doctor slot availability (check_availability), find patient appointments (find_patient_appointment), look up patient records (find_patient), and stage appointment changes when requested.
+- For patient bookings or modifications requested by staff on behalf of a patient: collect the required details (patient phone/name, doctor, date, time), call the appropriate tool, and summarize the staged confirmation clearly.
+- Never invent patient records, doctors, or slots. Rely on authorized tool results.
+
+============================================================
+HOSPITAL SCHEDULE & HOURS
+============================================================
+Open: Monday – Saturday. Sunday is closed.
+Morning session: 10:00 AM – 2:00 PM (slots: 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 13:00, 13:30)
+Evening session: 4:00 PM – 8:00 PM (slots: 16:00, 16:30, 17:00, 17:30, 18:00, 18:30, 19:00, 19:30)
+
+============================================================
+CURRENT DATE
+============================================================
+Today: ${today}
+Tomorrow: ${tomorrow}
+
+Resolve natural expressions (today, tomorrow, next Monday, etc.) into YYYY-MM-DD internally.
+`
+      : `
 You are Riya, the AI receptionist for a hospital.
 
 You help patients book, cancel, reschedule, and check appointments. You also help them find doctors.
@@ -731,14 +1037,18 @@ If none match, say so.
 BOOKING FLOW
 ============================================================
 
-1. Identify the patient (auto-lookup if verified phone is available).
-2. Ask which doctor or specialization they want (only if not already known).
-3. Ask for the preferred date (only if not given).
-4. Ask for the preferred time (only if not given).
-5. Call check_availability.
-6. If available, tell the patient and ask for confirmation.
-7. Only after explicit confirmation, call book_appointment.
-8. Confirm success only if the backend confirms it.
+1. Identify the patient (call find_patient using their verified phone number if available, or ask for name).
+2. Ask which doctor or specialization they want (only if not already stated).
+3. Ask for the preferred date (only if not given). Convert natural dates internally to YYYY-MM-DD.
+4. Ask for the preferred time (only if not given). Convert to HH:MM 24-hour format.
+5. Once you have patient ID, doctor ID, date, and time — call book_appointment. The server will check availability and stage a pending confirmation record.
+6. Read the tool result:
+   a. If success: true and status: PENDING_CONFIRMATION — present the exact doctor name, date, and time from the tool result to the patient and ask: "Would you like me to confirm this booking?"
+   b. If success: false — share the tool-provided error message (e.g. slot unavailable) and alternatives. Do not fabricate alternatives.
+7. Wait for the patient to say "yes" (or equivalent). The server handles execution automatically.
+8. Do NOT call check_availability before book_appointment for new bookings — book_appointment handles availability internally.
+
+NEVER ask the patient for confirmation before calling book_appointment. Call book_appointment first; it stages the action safely.
 
 Ask only for missing information. Do not repeat steps the patient already completed.
 
@@ -746,28 +1056,49 @@ Ask only for missing information. Do not repeat steps the patient already comple
 AVAILABILITY
 ============================================================
 
-Only call check_availability when doctor, date, and exact time are known.
+Do NOT call check_availability for new bookings or rescheduling — use book_appointment or reschedule_appointment instead. Both tools check availability internally.
+
+Only call check_availability when the patient explicitly asks whether a slot or doctor is free without wanting to book or reschedule yet.
 Convert times to 24-hour HH:MM format internally (e.g. 5 PM → 17:00).
 
 If a slot is unavailable, share only the backend-provided alternatives. Never invent alternatives.
 
 ============================================================
-EXPLICIT CONFIRMATION
+DOCTOR SPECIALIZATION TRANSPARENCY
 ============================================================
 
-Before booking, cancelling, or rescheduling — always ask for explicit confirmation.
+When reporting a doctor to the patient, always use the doctor's actual specialization field from the database, not the patient's query term.
 
-Examples of confirmation: "yes", "book it", "confirm", "go ahead".
+For example: if the patient asks for a "cardiologist" and the database returns Dr. Sharma with specialization "Heart", say: "Dr. Sharma (specialization: Heart) is available..."
 
-If the patient just says "yes" but the specific slot is ambiguous, ask them to clarify.
+Do NOT call Dr. Sharma a "cardiologist" unless the stored specialization field says "cardiologist".
 
 ============================================================
-CANCELLATION & RESCHEDULING
+EXPLICIT CONFIRMATION & STAGING
 ============================================================
 
-Cancellation: identify patient → find appointment → confirm with patient → cancel.
-Rescheduling: identify patient → find appointment → get new date/time → check availability → confirm → reschedule.
+All appointment mutations (booking, cancellation, and rescheduling) follow server-side staging:
+1. For booking: call book_appointment. It checks availability and stages the pending booking.
+2. For cancellation: call cancel_appointment. It validates ownership and stages the pending cancellation.
+3. For rescheduling: call reschedule_appointment. It validates ownership, checks availability of the new slot, and stages the pending reschedule.
 
+Read the tool result:
+- If success: true and status: PENDING_CONFIRMATION — present the exact details from the tool result to the patient and ask for confirmation.
+- If success: false — explain the error to the patient. NEVER ask for confirmation if staging failed.
+
+NEVER ask the patient for confirmation before calling book_appointment, cancel_appointment, or reschedule_appointment. Call the tool first; it stages the action safely.
+
+Examples of confirmation: "yes", "confirm", "proceed", "go ahead".
+Wait for the patient's explicit reply before the server executes the mutation automatically.
+
+============================================================
+CANCELLATION & RESCHEDULING FLOW
+============================================================
+
+Cancellation: identify patient → find appointment using find_patient_appointment → call cancel_appointment to stage → ask patient to confirm → wait for patient reply.
+Rescheduling: identify patient → find appointment using find_patient_appointment → get preferred new date/time → call reschedule_appointment to stage → ask patient to confirm → wait for patient reply.
+
+Do NOT call check_availability before reschedule_appointment — reschedule_appointment handles availability internally.
 If multiple appointments exist, ask which one. Never guess.
 
 ============================================================
@@ -822,8 +1153,14 @@ Email is optional.
   // TOOL LOOP
   // ==========================================================
 
+  let stagedConfirmationInTurn = false;
+  let stagedRescheduleInTurn = false;
+  let stagedBookingInTurn = false;
+  let stagedCancelInTurn = false;
+  let lastMutationError = null;
+
   while (true) {
-    const response = await createChatCompletion(messages, tools);
+    const response = await chatCompletionFn(messages, tools);
 
     const assistantMessage = response.choices[0].message;
 
@@ -835,12 +1172,42 @@ Email is optional.
     // ========================================================
 
     if (!assistantMessage.tool_calls?.length) {
-      return {
-        response:
-          assistantMessage.content ||
-          "I'm sorry, I couldn't generate a response.",
+      let finalReply =
+        assistantMessage.content ||
+        "I'm sorry, I couldn't generate a response.";
 
-        messages,
+      // Guardrail: Ensure a reschedule confirmation question can only be sent
+      // after a fresh RESCHEDULE action has been staged successfully.
+      const asksRescheduleConfirmation =
+        /(?:reschedule|confirm this change|confirm the change).*(?:confirm|would you like|do you want|shall I|should I)/i.test(finalReply) ||
+        /(?:would you like|do you want|shall I|should I|can I).*(?:reschedule|confirm this change|confirm the change)/i.test(finalReply);
+
+      if (asksRescheduleConfirmation && !stagedRescheduleInTurn) {
+        if (lastMutationError) {
+          finalReply = `I cannot reschedule your appointment: ${lastMutationError}`;
+        } else {
+          finalReply = "I was unable to stage your appointment reschedule. Please provide your appointment details and preferred new date and time.";
+        }
+      }
+
+      // Guardrail: Ensure a booking confirmation question can only be sent
+      // after a fresh BOOK action has been staged successfully.
+      const asksBookingConfirmation =
+        /(?:would you like|do you want|shall I|should I|can I).*(?:book|confirm this booking)/i.test(finalReply) ||
+        /(?:book|booking).*(?:would you like|do you want|shall I|should I|confirm)/i.test(finalReply);
+
+      if (asksBookingConfirmation && !stagedBookingInTurn && !stagedConfirmationInTurn) {
+        if (lastMutationError) {
+          finalReply = `I cannot book your appointment: ${lastMutationError}`;
+        }
+      }
+
+      return {
+        response: finalReply,
+        messages: [
+          ...messages,
+          { role: "assistant", content: finalReply },
+        ],
       };
     }
 
@@ -909,7 +1276,7 @@ Email is optional.
         // ====================================================
 
         if (toolName === "check_availability") {
-          result = await checkAvailabilityTool({
+          const availResult = await checkAvailability({
             ...args,
 
             /*
@@ -920,6 +1287,14 @@ Email is optional.
              */
             clinicId,
           });
+
+          // Append an explicit instruction so the LLM cannot mistake an
+          // availability result for a staged booking or rescheduling confirmation.
+          result = {
+            ...availResult,
+            staging_note:
+              "This result does NOT stage any booking action or rescheduling action. To create a pending confirmation that the patient can confirm, call book_appointment or reschedule_appointment.",
+          };
         }
 
         // ====================================================
@@ -987,10 +1362,7 @@ Email is optional.
         ) {
           const appointmentLookupArgs = { ...args };
           if (callerPhone) {
-            const verifiedPatient = await findPatientTool({
-              phone: callerPhone,
-              clinicId,
-            });
+            const verifiedPatient = await getVerifiedPatientForPhone(callerPhone, clinicId, db);
             if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
               result = { found: false, message: "Your patient record could not be verified." };
             } else {
@@ -1009,116 +1381,383 @@ Email is optional.
         }
 
         // ====================================================
-        // BOOK APPOINTMENT
+        // BOOK APPOINTMENT (STAGING ONLY)
         // ====================================================
 
-        else if (
-          toolName === "book_appointment"
-        ) {
+        else if (toolName === "book_appointment") {
           if (!allowBooking) {
             result = {
               success: false,
-
-              error:
-                "Appointment booking is currently disabled.",
+              error: "Appointment booking is currently disabled.",
             };
+            lastMutationError = result.error;
+          } else if (!actorKey) {
+            result = {
+              success: false,
+              error: "Trusted confirmation identity is required to book an appointment.",
+            };
+            lastMutationError = result.error;
+          } else if (stagedConfirmationInTurn) {
+            result = {
+              success: false,
+              error: "A confirmation request is already pending. Additional mutation tool calls in the same conversation turn are blocked.",
+            };
+            lastMutationError = result.error;
           } else {
-            /*
-             * For WhatsApp, derive the patient ID from the verified sender
-             * phone. Never let the model select a different patient record.
-             */
-            let bookingArgs = { ...args };
+            let bookingPatientId;
+            let bookingPatientName;
 
             if (callerPhone) {
-              const verifiedPatient = await findPatientTool({
-                phone: callerPhone,
-                clinicId,
-              });
+              const verifiedPatient = await getVerifiedPatientForPhone(callerPhone, clinicId, db);
 
               if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
                 result = {
                   success: false,
-                  error: "Your patient record could not be verified. Please contact the hospital.",
+                  error: "Your patient record could not be verified. Please register first.",
                 };
+                lastMutationError = result.error;
               } else {
-                bookingArgs.patientId = verifiedPatient.patient.id;
+                bookingPatientId = verifiedPatient.patient.id;
+                bookingPatientName = verifiedPatient.patient.name;
               }
+            } else if (args.patientId) {
+              const patient = await db.patient.findFirst({
+                where: {
+                  id: Number(args.patientId),
+                  clinicId: Number(clinicId),
+                },
+              });
+              if (!patient) {
+                result = {
+                  success: false,
+                  error: "Patient not found in this hospital.",
+                };
+                lastMutationError = result.error;
+              } else {
+                bookingPatientId = patient.id;
+                bookingPatientName = patient.name;
+              }
+            } else {
+              result = {
+                success: false,
+                error: "patientId is required to book an appointment.",
+              };
+              lastMutationError = result.error;
             }
 
             if (!result) {
-              result = await bookAppointmentTool({
-                ...bookingArgs,
-                clinicId,
+              const doctor = await db.doctor.findFirst({
+                where: {
+                  id: Number(args.doctorId),
+                  clinicId: Number(clinicId),
+                },
               });
+
+              if (!doctor) {
+                result = {
+                  success: false,
+                  error: "Doctor not found in this hospital.",
+                };
+                lastMutationError = result.error;
+              } else {
+                const availability = await checkAvailability({
+                  doctorId: Number(doctor.id),
+                  appointmentDate: args.appointmentDate,
+                  startTime: args.startTime,
+                  clinicId,
+                });
+
+                if (!availability.available) {
+                  result = {
+                    success: false,
+                    error:
+                      availability.message ||
+                      "That appointment slot is not available.",
+                    alternatives: availability.alternatives,
+                  };
+                  lastMutationError = result.error;
+                } else {
+                  const payload = {
+                    clinicId: Number(clinicId),
+                    patientId: Number(bookingPatientId),
+                    doctorId: Number(doctor.id),
+                    doctorName: doctor.name,
+                    doctorSpecialization: doctor.specialization,
+                    appointmentDate: args.appointmentDate,
+                    startTime: args.startTime,
+                    reason: args.reason || null,
+                  };
+
+                  await createPendingConfirmation(
+                    {
+                      actorKey,
+                      clinicId: Number(clinicId),
+                      patientId: Number(bookingPatientId),
+                      actionType: "BOOK",
+                      payload,
+                    },
+                    db
+                  );
+
+                  stagedConfirmationInTurn = true;
+                  stagedBookingInTurn = true;
+
+                  result = {
+                    success: true,
+                    status: "PENDING_CONFIRMATION",
+                    requiresConfirmation: true,
+                    actionType: "BOOK",
+                    details: {
+                      doctorName: doctor.name,
+                      doctorSpecialization: doctor.specialization,
+                      appointmentDate: args.appointmentDate,
+                      startTime: args.startTime,
+                    },
+                    message: `Appointment details are staged and held. You MUST ask the patient to confirm using the EXACT details from the 'details' field: "Would you like me to book your appointment with ${doctor.name} (${doctor.specialization}) on ${args.appointmentDate} at ${args.startTime}?" Do not say it is booked yet. Always use the doctor's actual specialization from 'details.doctorSpecialization', not the patient's query term.`,
+                  };
+                }
+              }
             }
           }
         }
 
         // ====================================================
-        // CANCEL APPOINTMENT
+        // CANCEL APPOINTMENT (STAGING ONLY)
         // ====================================================
 
-        else if (
-          toolName === "cancel_appointment"
-        ) {
+        else if (toolName === "cancel_appointment") {
           if (!allowAppointmentChanges) {
             result = {
               success: false,
-
-              error:
-                "Appointment cancellation is currently disabled.",
+              error: "Appointment cancellation is currently disabled.",
             };
+            lastMutationError = result.error;
+          } else if (!actorKey) {
+            result = {
+              success: false,
+              error: "Trusted confirmation identity is required.",
+            };
+            lastMutationError = result.error;
+          } else if (stagedConfirmationInTurn) {
+            result = {
+              success: false,
+              error: "A confirmation request is already pending. Additional mutation tool calls in the same conversation turn are blocked.",
+            };
+            lastMutationError = result.error;
           } else {
-            let canCancel = true;
+            let verifiedPatientId;
+
             if (callerPhone) {
-              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
-              const ownedAppointment = verifiedPatient?.patient?.id
-                ? await findPatientAppointmentTool({
-                    clinicId,
-                    patientId: verifiedPatient.patient.id,
-                    appointmentId: args.appointmentId,
-                  })
-                : { found: false };
-              canCancel = Boolean(ownedAppointment?.found);
+              const verifiedPatient = await getVerifiedPatientForPhone(callerPhone, clinicId, db);
+              if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+                result = {
+                  success: false,
+                  error: "Your patient record could not be verified for your WhatsApp number.",
+                };
+                lastMutationError = result.error;
+              } else {
+                verifiedPatientId = verifiedPatient.patient.id;
+              }
+            } else if (args.patientId) {
+              verifiedPatientId = Number(args.patientId);
             }
 
-            result = canCancel
-              ? await cancelAppointmentTool({ ...args, clinicId })
-              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
+            if (!result) {
+              const appointment = await db.appointment.findFirst({
+                where: {
+                  id: Number(args.appointmentId),
+                  clinicId: Number(clinicId),
+                  ...(verifiedPatientId ? { patientId: Number(verifiedPatientId) } : {}),
+                  status: "BOOKED",
+                },
+                include: {
+                  doctor: true,
+                },
+              });
+
+              if (!appointment) {
+                result = {
+                  success: false,
+                  error: "No active appointment found matching that ID for this patient.",
+                };
+                lastMutationError = result.error;
+              } else {
+                const dateStr = appointment.appointmentDate
+                  ? appointment.appointmentDate.toISOString().slice(0, 10)
+                  : undefined;
+
+                const payload = {
+                  clinicId: Number(clinicId),
+                  patientId: Number(appointment.patientId),
+                  appointmentId: Number(appointment.id),
+                  doctorName: appointment.doctor?.name,
+                  appointmentDate: dateStr,
+                  startTime: appointment.startTime,
+                };
+
+                await createPendingConfirmation(
+                  {
+                    actorKey,
+                    clinicId: Number(clinicId),
+                    patientId: Number(appointment.patientId),
+                    actionType: "CANCEL",
+                    payload,
+                  },
+                  db
+                );
+
+                stagedConfirmationInTurn = true;
+                stagedCancelInTurn = true;
+
+                result = {
+                  success: true,
+                  status: "PENDING_CONFIRMATION",
+                  requiresConfirmation: true,
+                  actionType: "CANCEL",
+                  message: `Cancellation is staged. You MUST ask the patient to confirm: "Are you sure you want to cancel your appointment with ${appointment.doctor?.name || "the doctor"} on ${dateStr} at ${appointment.startTime}?" Do not say it is cancelled yet.`,
+                };
+              }
+            }
           }
         }
 
         // ====================================================
-        // RESCHEDULE APPOINTMENT
+        // RESCHEDULE APPOINTMENT (STAGING ONLY)
         // ====================================================
 
-        else if (
-          toolName === "reschedule_appointment"
-        ) {
+        else if (toolName === "reschedule_appointment") {
           if (!allowAppointmentChanges) {
             result = {
               success: false,
-
-              error:
-                "Appointment rescheduling is currently disabled.",
+              error: "Appointment rescheduling is currently disabled.",
             };
+            lastMutationError = result.error;
+          } else if (!actorKey) {
+            result = {
+              success: false,
+              error: "Trusted confirmation identity is required to reschedule an appointment.",
+            };
+            lastMutationError = result.error;
+          } else if (stagedConfirmationInTurn) {
+            result = {
+              success: false,
+              error: "A confirmation request is already pending. Additional mutation tool calls in the same conversation turn are blocked.",
+            };
+            lastMutationError = result.error;
+          } else if (!args.appointmentId || !args.newDate || !args.newTime) {
+            result = {
+              success: false,
+              error: "appointmentId, newDate, and newTime are required to reschedule an appointment.",
+            };
+            lastMutationError = result.error;
           } else {
-            let canReschedule = true;
+            let verifiedPatientId;
+
             if (callerPhone) {
-              const verifiedPatient = await findPatientTool({ phone: callerPhone, clinicId });
-              const ownedAppointment = verifiedPatient?.patient?.id
-                ? await findPatientAppointmentTool({
-                    clinicId,
-                    patientId: verifiedPatient.patient.id,
-                    appointmentId: args.appointmentId,
-                  })
-                : { found: false };
-              canReschedule = Boolean(ownedAppointment?.found);
+              const verifiedPatient = await getVerifiedPatientForPhone(callerPhone, clinicId, db);
+              if (!verifiedPatient?.found || !verifiedPatient?.patient?.id) {
+                result = {
+                  success: false,
+                  error: "That appointment could not be verified for your WhatsApp number.",
+                };
+                lastMutationError = result.error;
+              } else {
+                verifiedPatientId = verifiedPatient.patient.id;
+              }
+            } else if (args.patientId) {
+              verifiedPatientId = Number(args.patientId);
             }
 
-            result = canReschedule
-              ? await rescheduleAppointmentTool({ ...args, clinicId })
-              : { success: false, error: "That appointment could not be verified for your WhatsApp number." };
+            if (!result) {
+              const appointment = await db.appointment.findFirst({
+                where: {
+                  id: Number(args.appointmentId),
+                  clinicId: Number(clinicId),
+                  ...(verifiedPatientId ? { patientId: Number(verifiedPatientId) } : {}),
+                  status: "BOOKED",
+                },
+                include: {
+                  doctor: true,
+                },
+              });
+
+              if (!appointment || Number(appointment.clinicId) !== Number(clinicId) || (verifiedPatientId && Number(appointment.patientId) !== Number(verifiedPatientId))) {
+                result = {
+                  success: false,
+                  error: "No active appointment found to reschedule for your account in this hospital.",
+                };
+                lastMutationError = result.error;
+              } else {
+                const availability = await checkAvailability({
+                  doctorId: Number(appointment.doctorId),
+                  appointmentDate: args.newDate,
+                  startTime: args.newTime,
+                  clinicId,
+                  excludeAppointmentId: Number(appointment.id),
+                });
+
+                if (!availability.available) {
+                  result = {
+                    success: false,
+                    error:
+                      availability.message ||
+                      "That new appointment slot is not available.",
+                    alternatives: availability.alternatives,
+                  };
+                  lastMutationError = result.error;
+                } else {
+                  const payload = {
+                    clinicId: Number(clinicId),
+                    patientId: Number(appointment.patientId),
+                    appointmentId: Number(appointment.id),
+                    doctorId: Number(appointment.doctorId),
+                    doctorName: appointment.doctor?.name,
+                    doctorSpecialization: appointment.doctor?.specialization,
+                    newDate: args.newDate,
+                    newTime: args.newTime,
+                  };
+
+                  await createPendingConfirmation(
+                    {
+                      actorKey,
+                      clinicId: Number(clinicId),
+                      patientId: Number(appointment.patientId),
+                      actionType: "RESCHEDULE",
+                      payload,
+                    },
+                    db
+                  );
+
+                  stagedConfirmationInTurn = true;
+                  stagedRescheduleInTurn = true;
+
+                  const doctorSpecialization = appointment.doctor?.specialization;
+                  const docSpecStr = doctorSpecialization ? ` (${doctorSpecialization})` : "";
+                  const oldDateStr = appointment.appointmentDate
+                    ? (typeof appointment.appointmentDate === "string"
+                        ? appointment.appointmentDate.slice(0, 10)
+                        : appointment.appointmentDate.toISOString().slice(0, 10))
+                    : undefined;
+
+                  result = {
+                    success: true,
+                    status: "PENDING_CONFIRMATION",
+                    requiresConfirmation: true,
+                    actionType: "RESCHEDULE",
+                    details: {
+                      appointmentId: Number(appointment.id),
+                      doctorName: appointment.doctor?.name,
+                      doctorSpecialization: appointment.doctor?.specialization,
+                      oldDate: oldDateStr,
+                      oldTime: appointment.startTime,
+                      newDate: args.newDate,
+                      newTime: args.newTime,
+                    },
+                    message: `Rescheduling is staged. You MUST ask the patient to confirm using the EXACT details from the 'details' field: "Would you like me to reschedule your appointment with Dr. ${appointment.doctor?.name || "the doctor"}${docSpecStr} from ${appointment.startTime} to ${args.newTime} on ${args.newDate}?" Do not say it is rescheduled yet. Always use the doctor's actual specialization from 'details.doctorSpecialization', not the patient's query term.`,
+                  };
+                }
+              }
+            }
           }
         }
 

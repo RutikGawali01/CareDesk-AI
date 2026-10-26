@@ -1,4 +1,7 @@
-const API_BASE_URL = "http://localhost:5001/api";
+
+const API_BASE_URL = `${
+  import.meta.env.VITE_API_URL || "http://localhost:5001"
+}/api`;
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
@@ -100,6 +103,12 @@ export const api = {
     request(`/appointments/${id}/reschedule`, {
       method: "PATCH",
       body: JSON.stringify(payload),
+    }),
+
+  updateAppointmentStatus: (id, status) =>
+    request(`/appointments/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     }),
 
   // ==========================================

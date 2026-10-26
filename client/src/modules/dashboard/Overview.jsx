@@ -12,10 +12,13 @@ import {
   AlertCircle,
   Sun,
   TrendingUp,
-  ShieldCheck
+  ShieldCheck,
+  AlertTriangle,
+  UserCheck
 } from "lucide-react";
 import { api } from "../../services/api";
 import { MORNING_SLOTS, EVENING_SLOTS, formatSlotLabel } from "../../constants/timeSlots";
+import { formatDoctorName, getStatusConfig, getTodayFormatted } from "../../utils/formatters";
 
 export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenNewAppointment, onOpenAI }) {
   const [checkDoctorId, setCheckDoctorId] = useState("");
@@ -24,12 +27,20 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
   const [checkResult, setCheckResult] = useState(null);
   const [checking, setChecking] = useState(false);
 
+  const todayDisplay = getTodayFormatted();
+
   const stats = dashboardData?.stats || {
     totalPatients: 0,
     totalDoctors: 0,
     totalAppointments: 0,
     bookedAppointments: 0,
+    confirmedAppointments: 0,
+    completedAppointments: 0,
+    noShowAppointments: 0,
     cancelledAppointments: 0,
+    todayCount: 0,
+    upcomingCount: 0,
+    attendancePendingCount: 0,
   };
 
   const todaysAppointments = dashboardData?.todaysAppointments || [];
@@ -62,7 +73,7 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-      {/* Welcome Banner - Argentina Light Blue & Sun Gold */}
+      {/* Welcome Banner */}
       <div className="glass-card" style={{
         padding: "26px 30px",
         background: "linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 60%, #fffbeb 100%)",
@@ -76,14 +87,28 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
             <Sun size={20} color="#f6b40e" fill="#f6b40e" />
             <span style={{ fontSize: "0.82rem", fontWeight: "800", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              CareDesk Practice Management Hub
+              CareDesk AI Hospital Management Hub
+            </span>
+            <span style={{
+              fontSize: "0.75rem",
+              fontWeight: "700",
+              color: "#0284c7",
+              background: "#ffffff",
+              padding: "2px 8px",
+              borderRadius: "99px",
+              border: "1px solid #bae6fd",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "4px"
+            }}>
+              <Calendar size={11} /> {todayDisplay}
             </span>
           </div>
           <h2 style={{ fontSize: "1.55rem", fontWeight: "800", color: "#0f172a" }}>
-            Clinic Reception & Schedule Dashboard
+            Hospital Reception & Schedule Dashboard
           </h2>
           <p style={{ color: "#475569", fontSize: "0.9rem", marginTop: "4px" }}>
-            Welcome to CareDesk! Manage patient records, check real-time doctor availability, and converse with Riya AI.
+            Live schedule operations for <strong style={{ color: "#0284c7" }}>{todayDisplay}</strong>, attendance tracking, and administrative AI Copilot.
           </p>
         </div>
 
@@ -93,107 +118,220 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
           style={{ padding: "12px 24px" }}
         >
           <Bot size={18} />
-          Launch AI Receptionist
+          Admin Copilot
         </button>
       </div>
+
+      {/* Attendance Pending Alert Banner */}
+      {(stats.attendancePendingCount || 0) > 0 && (
+        <div style={{
+          padding: "16px 20px",
+          borderRadius: "var(--radius-md)",
+          background: "#fffbeb",
+          border: "1px solid #fde68a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "14px",
+          boxShadow: "0 2px 8px rgba(245, 158, 11, 0.08)"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{
+              width: "36px", height: "36px", borderRadius: "10px",
+              background: "#fef3c7", color: "#b45309",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <div style={{ fontWeight: "700", color: "#92400e", fontSize: "0.92rem" }}>
+                {stats.attendancePendingCount} Appointment{stats.attendancePendingCount > 1 ? "s" : ""} Require Attendance Review
+              </div>
+              <div style={{ color: "#b45309", fontSize: "0.8rem", marginTop: "2px" }}>
+                Past scheduled appointments remain pending. Please mark patients as Completed or No-Show.
+              </div>
+            </div>
+          </div>
+
+          <button 
+            className="btn btn-secondary"
+            onClick={() => onNavigate("appointments")}
+            style={{ borderColor: "#fcd34d", background: "#ffffff", color: "#92400e", fontWeight: "700" }}
+          >
+            Review Attendance
+          </button>
+        </div>
+      )}
 
       {/* Metrics Cards Grid */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
-        gap: "18px"
+        gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+        gap: "16px"
       }}>
-        {/* Total Patients */}
-        <div className="glass-card-interactive" onClick={() => onNavigate("patients")} style={{ padding: "20px" }}>
+        {/* Today's Appointments */}
+        <div className="glass-card-interactive" onClick={() => onNavigate("appointments")} style={{ padding: "18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div style={{
-              width: "44px", height: "44px", borderRadius: "12px",
+              width: "40px", height: "40px", borderRadius: "10px",
               background: "#e0f2fe", color: "#0284c7",
               display: "flex", alignItems: "center", justifyContent: "center"
             }}>
-              <Users size={22} />
-            </div>
-            <span style={{ fontSize: "0.72rem", color: "#10b981", fontWeight: "700", display: "flex", alignItems: "center", gap: "2px" }}>
-              <TrendingUp size={12} /> Active
-            </span>
-          </div>
-          <div style={{ marginTop: "16px" }}>
-            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Total Patients</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>{stats.totalPatients}</div>
-          </div>
-        </div>
-
-        {/* Total Doctors */}
-        <div className="glass-card-interactive" onClick={() => onNavigate("doctors")} style={{ padding: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div style={{
-              width: "44px", height: "44px", borderRadius: "12px",
-              background: "#e0e7ff", color: "#4338ca",
-              display: "flex", alignItems: "center", justifyContent: "center"
-            }}>
-              <Stethoscope size={22} />
+              <Calendar size={20} />
             </div>
             <span style={{ fontSize: "0.72rem", color: "#0284c7", fontWeight: "700" }}>
-              Attending
+              Today
             </span>
           </div>
-          <div style={{ marginTop: "16px" }}>
-            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Active Doctors</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>{stats.totalDoctors}</div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Today's Schedule</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>
+              {stats.todayCount ?? todaysAppointments.length}
+            </div>
           </div>
         </div>
 
-        {/* Total Appointments */}
-        <div className="glass-card-interactive" onClick={() => onNavigate("appointments")} style={{ padding: "20px" }}>
+        {/* Upcoming Appointments */}
+        <div className="glass-card-interactive" onClick={() => onNavigate("appointments")} style={{ padding: "18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div style={{
-              width: "44px", height: "44px", borderRadius: "12px",
+              width: "40px", height: "40px", borderRadius: "10px",
               background: "#ccfbf1", color: "#0d9488",
               display: "flex", alignItems: "center", justifyContent: "center"
             }}>
-              <Calendar size={22} />
+              <Clock size={20} />
             </div>
-            <ArrowUpRight size={18} color="#94a3b8" />
+            <span style={{ fontSize: "0.72rem", color: "#0d9488", fontWeight: "700" }}>
+              Scheduled
+            </span>
           </div>
-          <div style={{ marginTop: "16px" }}>
-            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Total Bookings</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>{stats.totalAppointments}</div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Upcoming</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>
+              {stats.upcomingCount || stats.bookedAppointments}
+            </div>
           </div>
         </div>
 
-        {/* Booked / Active */}
-        <div className="glass-card" style={{ padding: "20px" }}>
+        {/* Attendance Pending */}
+        <div className="glass-card-interactive" onClick={() => onNavigate("appointments")} style={{ padding: "18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div style={{
-              width: "44px", height: "44px", borderRadius: "12px",
+              width: "40px", height: "40px", borderRadius: "10px",
+              background: "#fef3c7", color: "#b45309",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <AlertTriangle size={20} />
+            </div>
+            <span style={{ fontSize: "0.72rem", color: "#b45309", fontWeight: "700" }}>
+              Pending
+            </span>
+          </div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Needs Review</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: (stats.attendancePendingCount || 0) > 0 ? "#b45309" : "#0f172a", marginTop: "2px" }}>
+              {stats.attendancePendingCount || 0}
+            </div>
+          </div>
+        </div>
+
+        {/* Completed */}
+        <div className="glass-card" style={{ padding: "18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{
+              width: "40px", height: "40px", borderRadius: "10px",
               background: "#dcfce7", color: "#15803d",
               display: "flex", alignItems: "center", justifyContent: "center"
             }}>
-              <CheckCircle2 size={22} />
+              <CheckCircle2 size={20} />
             </div>
-            <span className="badge badge-booked">Confirmed</span>
+            <span className="badge badge-booked" style={{ background: "#ecfdf5", color: "#047857" }}>Attended</span>
           </div>
-          <div style={{ marginTop: "16px" }}>
-            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Booked Slots</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: "800", color: "#15803d", marginTop: "2px" }}>{stats.bookedAppointments}</div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Completed</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#15803d", marginTop: "2px" }}>
+              {stats.completedAppointments || 0}
+            </div>
+          </div>
+        </div>
+
+        {/* No-Shows */}
+        <div className="glass-card" style={{ padding: "18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{
+              width: "40px", height: "40px", borderRadius: "10px",
+              background: "#ffedd5", color: "#c2410c",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <XCircle size={20} />
+            </div>
+            <span style={{ fontSize: "0.72rem", color: "#c2410c", fontWeight: "700" }}>Missed</span>
+          </div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>No-Shows</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#c2410c", marginTop: "2px" }}>
+              {stats.noShowAppointments || 0}
+            </div>
           </div>
         </div>
 
         {/* Cancelled */}
-        <div className="glass-card" style={{ padding: "20px" }}>
+        <div className="glass-card" style={{ padding: "18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div style={{
-              width: "44px", height: "44px", borderRadius: "12px",
+              width: "40px", height: "40px", borderRadius: "10px",
               background: "#fee2e2", color: "#b91c1c",
               display: "flex", alignItems: "center", justifyContent: "center"
             }}>
-              <XCircle size={22} />
+              <XCircle size={20} />
             </div>
             <span className="badge badge-cancelled">Cancelled</span>
           </div>
-          <div style={{ marginTop: "16px" }}>
-            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Cancelled Slots</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: "800", color: "#b91c1c", marginTop: "2px" }}>{stats.cancelledAppointments}</div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Cancelled</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#b91c1c", marginTop: "2px" }}>
+              {stats.cancelledAppointments}
+            </div>
+          </div>
+        </div>
+
+        {/* Total Patients */}
+        <div className="glass-card-interactive" onClick={() => onNavigate("patients")} style={{ padding: "18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{
+              width: "40px", height: "40px", borderRadius: "10px",
+              background: "#e0f2fe", color: "#0284c7",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <Users size={20} />
+            </div>
+            <span style={{ fontSize: "0.72rem", color: "#10b981", fontWeight: "700" }}>Active</span>
+          </div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Total Patients</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>
+              {stats.totalPatients}
+            </div>
+          </div>
+        </div>
+
+        {/* Total Doctors */}
+        <div className="glass-card-interactive" onClick={() => onNavigate("doctors")} style={{ padding: "18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{
+              width: "40px", height: "40px", borderRadius: "10px",
+              background: "#e0e7ff", color: "#4338ca",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              <Stethoscope size={20} />
+            </div>
+            <span style={{ fontSize: "0.72rem", color: "#4338ca", fontWeight: "700" }}>Attending</span>
+          </div>
+          <div style={{ marginTop: "14px" }}>
+            <span style={{ fontSize: "0.78rem", color: "#64748b", fontWeight: "600" }}>Hospital Doctors</span>
+            <div style={{ fontSize: "1.7rem", fontWeight: "800", color: "#0f172a", marginTop: "2px" }}>
+              {stats.totalDoctors}
+            </div>
           </div>
         </div>
       </div>
@@ -208,8 +346,8 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
         <div className="glass-card" style={{ padding: "24px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <div>
-              <h3 style={{ fontSize: "1.1rem", fontWeight: "700", color: "#0f172a" }}>Today's Scheduled Appointments</h3>
-              <p style={{ fontSize: "0.8rem", color: "#64748b" }}>Live list of booked clinic appointments for today</p>
+              <h3 style={{ fontSize: "1.1rem", fontWeight: "700", color: "#0f172a" }}>Today's Hospital Appointments</h3>
+              <p style={{ fontSize: "0.8rem", color: "#64748b" }}>Live schedule and attendance status of appointments today</p>
             </div>
             <button className="btn btn-secondary" onClick={() => onNavigate("appointments")}>
               View All Appointments
@@ -226,64 +364,90 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
               border: "1px dashed #cbd5e1"
             }}>
               <Clock size={36} color="#94a3b8" style={{ marginBottom: "10px" }} />
-              <p style={{ fontWeight: "600", fontSize: "0.95rem", color: "#334155" }}>No booked appointments for today</p>
-              <p style={{ fontSize: "0.8rem", marginTop: "4px" }}>Book an appointment manually or ask Riya AI Receptionist!</p>
+              <p style={{ fontWeight: "600", fontSize: "0.95rem", color: "#334155" }}>No appointments scheduled for today</p>
+              <p style={{ fontSize: "0.8rem", marginTop: "4px" }}>Book an appointment above or use the Admin Copilot.</p>
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {todaysAppointments.map((apt) => (
-                <div key={apt.id} style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 18px",
-                  background: "#ffffff",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid #e2e8f0",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-                    <div style={{
-                      width: "40px",
-                      height: "40px",
-                      borderRadius: "50%",
-                      background: "linear-gradient(135deg, #75aadb, #4a90e2)",
-                      color: "#fff",
-                      fontWeight: "700",
-                      fontSize: "0.85rem",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center"
-                    }}>
-                      {getInitials(apt.patient?.name)}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: "700", color: "#0f172a", fontSize: "0.95rem" }}>
-                        {apt.patient?.name || `Patient #${apt.patientId}`}
+              {todaysAppointments.map((apt) => {
+                const statusCfg = getStatusConfig(apt.status);
+                return (
+                  <div key={apt.id} style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "14px 18px",
+                    background: "#ffffff",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid #e2e8f0",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                      <div style={{
+                        width: "40px",
+                        height: "40px",
+                        borderRadius: "50%",
+                        background: "linear-gradient(135deg, #75aadb, #4a90e2)",
+                        color: "#fff",
+                        fontWeight: "700",
+                        fontSize: "0.85rem",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}>
+                        {getInitials(apt.patient?.name)}
                       </div>
-                      <div style={{ fontSize: "0.78rem", color: "#64748b", marginTop: "2px" }}>
-                        With <span style={{ color: "#0369a1", fontWeight: "600" }}>Dr. {apt.doctor?.name}</span> • {apt.reason || "General Consultation"}
+                      <div>
+                        <div style={{ fontWeight: "700", color: "#0f172a", fontSize: "0.95rem" }}>
+                          {apt.patient?.name || `Patient #${apt.patientId}`}
+                        </div>
+                        <div style={{ fontSize: "0.78rem", color: "#64748b", marginTop: "2px" }}>
+                          With <span style={{ color: "#0369a1", fontWeight: "600" }}>{formatDoctorName(apt.doctor?.name)}</span> • {apt.reason || "General Consultation"}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div style={{
-                      padding: "6px 12px",
-                      background: "#e0f2fe",
-                      border: "1px solid #bae6fd",
-                      borderRadius: "var(--radius-sm)",
-                      fontFamily: "var(--font-mono)",
-                      color: "#0284c7",
-                      fontWeight: "700",
-                      fontSize: "0.85rem"
-                    }}>
-                      {apt.startTime}
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div style={{
+                        padding: "6px 12px",
+                        background: "#e0f2fe",
+                        border: "1px solid #bae6fd",
+                        borderRadius: "var(--radius-sm)",
+                        fontFamily: "var(--font-mono)",
+                        color: "#0284c7",
+                        fontWeight: "700",
+                        fontSize: "0.85rem"
+                      }}>
+                        {apt.startTime}
+                      </div>
+
+                      {apt.isAttendancePending && (
+                        <span style={{
+                          fontSize: "0.72rem",
+                          padding: "3px 8px",
+                          borderRadius: "4px",
+                          background: "#fffbeb",
+                          color: "#b45309",
+                          border: "1px solid #fde68a",
+                          fontWeight: "700"
+                        }}>
+                          Needs Review
+                        </span>
+                      )}
+
+                      <span style={{
+                        fontSize: "0.75rem",
+                        padding: "4px 10px",
+                        borderRadius: "99px",
+                        fontWeight: "700",
+                        border: "1px solid",
+                      }} className={statusCfg.bg}>
+                        {statusCfg.label}
+                      </span>
                     </div>
-                    <span className="badge badge-booked">BOOKED</span>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -311,7 +475,7 @@ export function Overview({ dashboardData, doctors, patients, onNavigate, onOpenN
                   <option value="">Select Doctor...</option>
                   {doctors.map((doc) => (
                     <option key={doc.id} value={doc.id}>
-                      Dr. {doc.name} ({doc.specialization})
+                      {formatDoctorName(doc.name)} ({doc.specialization})
                     </option>
                   ))}
                 </select>
