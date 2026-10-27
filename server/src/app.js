@@ -16,9 +16,14 @@ const app = express();
 // CORS CONFIGURATION
 // ===============================
 
+const configuredOrigins = process.env.CLIENT_ORIGIN
+  ? process.env.CLIENT_ORIGIN.split(",").map((o) => o.trim())
+  : [];
+
 const allowedOrigins = [
   "http://localhost:5173",
   "https://caredesk-xi.vercel.app",
+  ...configuredOrigins,
 ];
 
 app.use(

@@ -1,0 +1,80 @@
+# ========================================================
+# CareDesk-AI Docker Compose Architecture (Phase 4)
+# ========================================================
+
+services:
+  # ------------------------------------------------------
+  # Backend API Service (Node.js 22 + Express + Prisma)
+  # ------------------------------------------------------
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: caredesk-backend:compose
+    container_name: caredesk-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-5001}:5001"
+    env_file:
+      - path: server/.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      - NODE_ENV=production
+      - PORT=5001
+      - DATABASE_URL=${DATABASE_URL:-}
+      - JWT_SECRET=${JWT_SECRET:-care-desk-default-secret-jwt-key}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-7d}
+      - CLIENT_ORIGIN=${CLIENT_ORIGIN:-http://localhost:5173,http://localhost:80}
+      - AI_BOOKING_ENABLED=${AI_BOOKING_ENABLED:-false}
+      - AI_APPOINTMENT_CHANGES_ENABLED=${AI_APPOINTMENT_CHANGES_ENABLED:-false}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-20b}
+      - WHATSAPP_CLINIC_MAP=${WHATSAPP_CLINIC_MAP:-{}}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-}
+      - WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN:-}
+      - META_APP_SECRET=${META_APP_SECRET:-}
+    networks:
+      - caredesk-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5001/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ------------------------------------------------------
+  # Frontend Client Service (React 19 + Vite + Nginx)
+  # ------------------------------------------------------
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:5001}
+    image: caredesk-frontend:compose
+    container_name: caredesk-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - caredesk-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+# --------------------------------------------------------
+# Private Docker Network for Container Communication
+# --------------------------------------------------------
+networks:
+  caredesk-network:
+    driver: bridge

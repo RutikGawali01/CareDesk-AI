@@ -150,3 +150,203 @@ flowchart TD
 1. **No Credentials in Tests**: Tests run with dummy fixture secrets (`JWT_SECRET`, `WHATSAPP_VERIFY_TOKEN`) and never touch production credentials or external services.
 2. **Database Isolation**: Unit and HTTP tests use in-memory state, mock adapters, or isolated test fixtures. No production database mutations occur during CI.
 3. **No Secret Leaks**: Health and error endpoints explicitly filter out stack traces, environment variables, and connection strings.
+
+---
+
+## Phase 3 & 4: Docker Containerization & Docker Compose Integration
+
+CareDesk-AI provides production-grade containerization and orchestration using Docker and Docker Compose.
+
+### Architecture Overview
+
+```
+                      +---------------------------------------+
+                      |               Host Machine            |
+                      |                                       |
+                      |  Browser: http://localhost:5173       |
+                      |  Direct API: http://localhost:5001    |
+                      +------------------+--------------------+
+                                         |
+                       Port 5173:80      |      Port 5001:5001
+                      +------------------v--------------------+
+                      |            caredesk-network           |
+                      |            (Bridge Network)           |
+                      |                                       |
+                      |  +---------------------------------+  |
+                      |  | caredesk-frontend               |  |
+                      |  | - Nginx 1.27 Alpine             |  |
+                      |  | - Port 80 (serves static SPA)   |  |
+                      |  | - Reverse proxy /api/ to        |  |
+                      |  |   http://backend:5001           |  |
+                      |  +----------------+----------------+  |
+                      |                   |                   |
+                      |     Proxy /api/   |                   |
+                      |                   v                   |
+                      |  +---------------------------------+  |
+                      |  | caredesk-backend                |  |
+                      |  | - Node.js 22 Slim (Debian)      |  |
+                      |  | - Non-root user (node)          |  |
+                      |  | - Express + Prisma Client       |  |
+                      |  | - Port 5001 (host 0.0.0.0)      |  |
+                      |  | - Healthcheck: /api/health      |  |
+                      |  +----------------+----------------+  |
+                      |                   |                   |
+                      +-------------------|-------------------+
+                                          |
+                                          v DATABASE_URL (SSL)
+                      +---------------------------------------+
+                      | Managed PostgreSQL Database           |
+                      +---------------------------------------+
+```
+
+### Dockerfiles Design
+
+#### Frontend (`client/Dockerfile`)
+- **Stage 1 (Builder)**: `node:22-alpine` installs dependencies via `npm ci`, accepts build argument `VITE_API_URL` (defaults to `http://localhost:5001`), and compiles production assets with `npm run build`.
+- **Stage 2 (Runtime)**: `nginx:1.27-alpine` serves the compiled static files (`/usr/share/nginx/html`). Configured via `client/nginx.conf` with:
+  - SPA client-side routing fallback (`try_files $uri $uri/ /index.html`).
+  - Gzip asset compression.
+  - Static file cache headers (`Cache-Control: public, max-age=31536000, immutable`).
+  - Dynamic Docker DNS resolution (`resolver 127.0.0.11`) and reverse proxy for `/api/` forwarding to `http://backend:5001`.
+  - Container health check: `wget -q --spider http://127.0.0.1:80/`.
+
+#### Backend (`server/Dockerfile`)
+- **Base Image**: `node:22-slim` (Debian-based glibc compatibility for `@prisma/client`, `@prisma/adapter-pg`, and `bcrypt`).
+- **Build Caching**: Copies `package.json`, `package-lock.json`, `prisma.config.ts`, and `prisma/schema.prisma` before source code.
+- **Dependency Isolation**: Installs production dependencies only via `npm ci --omit=dev` and executes `prisma generate`.
+- **Security**: Runs under unprivileged user `USER node`.
+- **Binding**: Express listens on `0.0.0.0:${PORT:-5001}`.
+- **Container Health Check**: Uses Node.js HTTP client to query `http://127.0.0.1:5001/api/health` without requiring external `curl` binaries.
+
+---
+
+### Prerequisites
+- Docker Engine 24+ or Docker Desktop 4+ (with Compose v2+)
+- WSL2 enabled (on Windows)
+
+---
+
+### Environment Variables Template
+
+Create a `.env` file in the repository root by copying `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Scope | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `BACKEND_PORT` | Host Mapping | `5001` | Host port mapped to backend container (5001). |
+| `FRONTEND_PORT` | Host Mapping | `5173` | Host port mapped to frontend container (80). |
+| `VITE_API_URL` | Frontend Build | `http://localhost:5001` | Backend URL used by host browser. |
+| `PORT` | Backend Runtime | `5001` | Container port Express listens on. |
+| `NODE_ENV` | Backend Runtime | `production` | Node environment flag. |
+| `DATABASE_URL` | Backend Runtime | *Required* | PostgreSQL connection string. |
+| `JWT_SECRET` | Backend Runtime | *Required* | JWT signing secret (min 32 characters). |
+| `JWT_EXPIRES_IN` | Backend Runtime | `7d` | Token expiration period. |
+| `CLIENT_ORIGIN` | Backend Runtime | `http://localhost:5173,http://localhost:80` | Allowed CORS origins for browser access. |
+| `AI_BOOKING_ENABLED` | Backend Runtime | `false` | Enable AI-driven appointment creation. |
+| `AI_APPOINTMENT_CHANGES_ENABLED` | Backend Runtime | `false` | Enable AI-driven cancellations/rescheduling. |
+| `OPENROUTER_API_KEY` | Backend Runtime | *Optional* | API key for primary AI LLM router. |
+| `GROQ_API_KEY` | Backend Runtime | *Optional* | API key for fallback Groq LLM. |
+| `WHATSAPP_CLINIC_MAP` | Backend Runtime | `{}` | JSON map of Meta phone IDs to clinic IDs. |
+| `WHATSAPP_VERIFY_TOKEN` | Backend Runtime | *Optional* | Meta webhook verification handshake token. |
+| `WHATSAPP_ACCESS_TOKEN` | Backend Runtime | *Optional* | Meta Graph API access token. |
+| `META_APP_SECRET` | Backend Runtime | *Optional* | Meta webhook HMAC SHA-256 verification secret. |
+
+> [!IMPORTANT]
+> Never commit `.env` files with production database URLs or secrets to version control. Both `.gitignore` and `.dockerignore` prevent credentials from being leaked into source control or Docker image layers.
+
+---
+
+### Docker Compose Lifecycle Commands
+
+#### 1. Validate Configuration
+```bash
+docker compose config
+```
+
+#### 2. Build Services
+```bash
+docker compose build
+```
+
+#### 3. Start Application Stack (Detached)
+```bash
+docker compose up -d
+```
+*Docker Compose starts `backend`, waits until it passes health check (`service_healthy`), and then launches `frontend`.*
+
+#### 4. Check Service Status & Health
+```bash
+docker compose ps
+```
+
+Expected status:
+```text
+NAME                IMAGE                       STATUS                    PORTS
+caredesk-backend    caredesk-backend:compose    Up (healthy)              0.0.0.0:5001->5001/tcp
+caredesk-frontend   caredesk-frontend:compose   Up (healthy)              0.0.0.0:5173->80/tcp
+```
+
+#### 5. Inspect Service Logs
+```bash
+# View last 100 log lines from all containers
+docker compose logs --tail=100
+
+# Stream logs continuously from a specific service
+docker compose logs -f backend
+docker compose logs -f frontend
+```
+
+#### 6. Restart Application Stack
+```bash
+docker compose restart
+```
+
+#### 7. Stop Application Stack Safely
+```bash
+docker compose down
+```
+> [!WARNING]
+> Do NOT use `docker compose down -v` as the `-v` flag deletes named Docker volumes and local persistent data.
+
+---
+
+### Standalone Docker Execution (Optional)
+
+To run images individually without Docker Compose:
+
+```bash
+# Build standalone images
+docker build -t caredesk-backend:local ./server
+docker build -t caredesk-frontend:local ./client
+
+# Run backend container
+docker run -d \
+  --name caredesk-backend \
+  -p 5001:5001 \
+  -e NODE_ENV=production \
+  -e PORT=5001 \
+  -e DATABASE_URL="postgresql://user:pass@host:5432/caredesk" \
+  -e JWT_SECRET="your-jwt-secret-min-32-chars" \
+  caredesk-backend:local
+
+# Run frontend container
+docker run -d \
+  --name caredesk-frontend \
+  -p 5173:80 \
+  caredesk-frontend:local
+```
+
+---
+
+### Troubleshooting & Verification
+
+| Issue | Cause | Resolution |
+| :--- | :--- | :--- |
+| `caredesk-backend` unhealthy on startup | Port conflict on 5001 or missing database network access | Verify `netstat -ano \| findstr 5001` on host and ensure `DATABASE_URL` is reachable. |
+| Browser shows CORS error | Frontend running on non-default port | Set `CLIENT_ORIGIN=http://localhost:<port>` in `.env` or Compose environment. |
+| Client route returns 404 upon browser reload | Missing SPA fallback | Confirm `client/nginx.conf` contains `try_files $uri $uri/ /index.html;`. |
+| Prisma generation failure during build | Missing `schema.prisma` in context | Ensure `prisma/` folder is copied before `npm ci --omit=dev` in `server/Dockerfile`. |
+
