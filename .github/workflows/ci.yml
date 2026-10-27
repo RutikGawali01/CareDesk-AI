@@ -2,7 +2,7 @@ name: CareDesk AI CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, devops-cicd, test-ci-gate-failure]
+    branches: [main, develop, devops-cicd]
     tags: ['v*']
   pull_request:
     branches: [main, develop]
