@@ -443,4 +443,72 @@ docker run -d \
   ghcr.io/rutikgawali01/caredesk-frontend:devops-cicd
 ```
 
+---
+
+## Phase 6: Automated CI/CD Pipeline & Deployment Gate
+
+The CareDesk-AI automated CI/CD pipeline connects testing, building, container publishing, and deployment verification into a single unified workflow.
+
+### Complete Pipeline Architecture
+
+```mermaid
+flowchart TD
+    Trigger["Git Push (main, develop, devops-cicd, v*) / PR (main, develop)"] --> Stage1
+
+    subgraph Stage1["Stage 1: CI Quality Gates (Parallel)"]
+        F_CI["Frontend CI\n- Setup Node 22\n- npm ci (lockfile)\n- npm run lint (Oxlint)\n- npm run build (Vite)"]
+        B_CI["Backend CI\n- Setup Node 22\n- npm ci (lockfile)\n- npm test (71 tests)\n- node --check src/server.js"]
+    end
+
+    F_CI & B_CI --> Gate1{"All CI Checks\nPassed?"}
+
+    Gate1 -->|Failure| Abort1["Pipeline Fails\nNo images built or published"]
+    Gate1 -->|Success| CheckPR{"Is Pull Request?"}
+
+    CheckPR -->|Yes| PR_Done["PR Validated Successfully\nPublishing Skipped (Security)"]
+    CheckPR -->|No| Stage23
+
+    subgraph Stage23["Stage 2 & 3: Independent Docker Build & Publish to GHCR"]
+        P_Back["Publish Backend Image\n- Setup Buildx\n- Login to ghcr.io\n- Tag: sha-commit, branch, semver\n- Cache: type=gha\n- Push: ghcr.io/.../caredesk-backend"]
+        P_Front["Publish Frontend Image\n- Setup Buildx\n- Login to ghcr.io\n- Tag: sha-commit, branch, semver\n- Cache: type=gha\n- Push: ghcr.io/.../caredesk-frontend"]
+    end
+
+    P_Back & P_Front --> Gate2{"Both Images\nPublished?"}
+
+    Gate2 -->|Failure| Abort2["Publishing Failed\nDeployment Skipped"]
+    Gate2 -->|Success| Stage4
+
+    subgraph Stage4["Stage 4: Automated Deployment Gate"]
+        Deploy["Deployment Verification Job\n- Gated on target branch (main, devops-cicd)\n- Evaluates DEPLOY_HOST / RENDER_DEPLOY_HOOK / KUBECONFIG\n- Verifies sha-<commit> image coordinates\n- Executes release deployment if configured\n- Safely gates if hosting targets are pending"]
+    end
+```
+
+### Workflow Trigger Rules
+
+| Event | Branches / Tags | Jobs Executed | Publishing & Deployment Behavior |
+| :--- | :--- | :--- | :--- |
+| **Pull Request** | `main`, `develop` | `frontend-ci`, `backend-ci` | **Read-only validation**: runs lint, build, and automated tests. Publishing and deployment are blocked to prevent untrusted code execution. |
+| **Branch Push** | `devops-cicd`, `develop` | `frontend-ci`, `backend-ci`, `publish-*`, `deploy` | Full pipeline: validates, builds, publishes images with `sha-<commit>` and branch tags, and evaluates the deployment gate. |
+| **Production Push** | `main` | `frontend-ci`, `backend-ci`, `publish-*`, `deploy` | Full production pipeline: validates, builds, publishes images with `sha-<commit>` and `latest` tags, and executes deployment. |
+| **Release Tag** | `v*` (e.g. `v1.0.0`) | `frontend-ci`, `backend-ci`, `publish-*`, `deploy` | Release pipeline: validates, publishes versioned SemVer images (`v1.0.0`, `1.0.0`, `1.0`, `latest`), and deploys release artifacts. |
+
+### Failure Behavior & Quality Gate Enforcement
+
+1. **Frontend Lint or Build Failure**: If Oxlint detects an error or Vite fails compilation, `frontend-ci` exits with code 1. `publish-backend`, `publish-frontend`, and `deploy` are cancelled.
+2. **Backend Test Failure**: If any of the 71 automated tests fail or `server.js` fails syntax verification, `backend-ci` exits with code 1. `publish-backend`, `publish-frontend`, and `deploy` are cancelled.
+3. **Controlled Gate Verification**: Verified via temporary branch experiments (`test-ci-gate-failure`) where deliberate test assertions blocked Docker builds and prevented image pushes.
+
+### Deployment Gate & Missing Infrastructure Handling
+
+If no cloud hosting provider (e.g. Render deploy hook, Kubernetes cluster, or SSH target) is configured in repository secrets (`DEPLOY_HOST`, `RENDER_DEPLOY_HOOK`, `KUBECONFIG`):
+- The `deploy` job logs the exact image coordinates and commit metadata.
+- Outputs a GitHub Actions notice: `Deployment Gated: No external deployment target configured in repository secrets`.
+- Successfully finishes with exit code 0 without inventing fake servers or pretending live deployment occurred.
+
+### How to Inspect Pipeline Logs
+1. Navigate to **Actions** tab in the GitHub repository: `https://github.com/RutikGawali01/CareDesk-AI/actions`.
+2. Click on the latest workflow run.
+3. Select any job to view live streaming logs, Docker layer caching steps, and test outputs.
+
+
 
