@@ -350,3 +350,97 @@ docker run -d \
 | Client route returns 404 upon browser reload | Missing SPA fallback | Confirm `client/nginx.conf` contains `try_files $uri $uri/ /index.html;`. |
 | Prisma generation failure during build | Missing `schema.prisma` in context | Ensure `prisma/` folder is copied before `npm ci --omit=dev` in `server/Dockerfile`. |
 
+---
+
+## Phase 5: Container Registry Publishing (GHCR)
+
+CareDesk-AI automates building and publishing production Docker images to GitHub Container Registry (GHCR) via GitHub Actions (`.github/workflows/ci.yml`).
+
+### Registry & Image Coordinates
+
+| Component | Registry | Image Name |
+| :--- | :--- | :--- |
+| **Backend API** | GitHub Container Registry (`ghcr.io`) | `ghcr.io/rutikgawali01/caredesk-backend` |
+| **Frontend UI** | GitHub Container Registry (`ghcr.io`) | `ghcr.io/rutikgawali01/caredesk-frontend` |
+
+*Note: In accordance with OCI and Docker registry requirements, repository and image names are strictly lowercase.*
+
+### Automated Publishing Workflow
+
+Images are built and published independently by GitHub Actions:
+
+```mermaid
+flowchart TD
+    Push["Git Push to main, develop, devops-cicd or Tag v*"] --> CI
+
+    subgraph CI["Mandatory Quality Gate"]
+        F_CI["Frontend CI: Lint & Build"]
+        B_CI["Backend CI: 71 Tests & Syntax"]
+    end
+
+    F_CI & B_CI --> Gate{"All CI Checks Passed?"}
+    Gate -->|No| Fail["Pipeline Fails - No Images Published"]
+    Gate -->|Yes| CheckPR{"Is Pull Request?"}
+
+    CheckPR -->|Yes| Skip["Skip Publishing (Fork Security)"]
+    CheckPR -->|No| Publish["Publish to GHCR"]
+
+    subgraph Publish["Independent Publishing Jobs"]
+        P_Back["Publish Backend: ghcr.io/.../caredesk-backend"]
+        P_Front["Publish Frontend: ghcr.io/.../caredesk-frontend"]
+    end
+```
+
+### Tagging Strategy
+
+| Tag Type | Example | Usage / Retention Policy |
+| :--- | :--- | :--- |
+| **Short Commit SHA** | `sha-edbad23` | **Immutable tag** generated on every commit. Primary tag for deterministic rollbacks and GitOps deployments. |
+| **Full Commit SHA** | `sha-edbad23819ad8b98634d451618676c4493d3138b` | Full cryptographic trace to the Git commit. |
+| **Branch Ref** | `devops-cicd`, `develop` | Tracks the latest build of an active development branch. Overwritten on subsequent pushes. |
+| **Semantic Version** | `v1.0.0`, `1.0.0`, `1.0` | Produced automatically when pushing Git release tags (e.g. `git tag v1.0.0 && git push origin v1.0.0`). |
+| **Latest** | `latest` | Updated only on pushes to `main` or semantic version tags. Never updated on unstable branch pushes. |
+
+### Pulling Published Images
+
+#### Authenticating to GHCR
+If the images or repository packages are private:
+```bash
+# Log in with your GitHub Personal Access Token (PAT) with read:packages scope
+echo $CR_PAT | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
+```
+
+#### Pull Commands
+```bash
+# Pull by immutable commit SHA (Recommended for production):
+docker pull ghcr.io/rutikgawali01/caredesk-backend:sha-<commit_sha>
+docker pull ghcr.io/rutikgawali01/caredesk-frontend:sha-<commit_sha>
+
+# Pull by branch tag:
+docker pull ghcr.io/rutikgawali01/caredesk-backend:devops-cicd
+docker pull ghcr.io/rutikgawali01/caredesk-frontend:devops-cicd
+
+# Pull by release version:
+docker pull ghcr.io/rutikgawali01/caredesk-backend:v1.0.0
+docker pull ghcr.io/rutikgawali01/caredesk-frontend:v1.0.0
+```
+
+#### Running Published Images
+```bash
+# Run backend container
+docker run -d \
+  --name caredesk-backend \
+  -p 5001:5001 \
+  -e PORT=5001 \
+  -e DATABASE_URL="postgresql://user:pass@host:5432/caredesk?sslmode=require" \
+  -e JWT_SECRET="your-jwt-secret-min-32-chars" \
+  ghcr.io/rutikgawali01/caredesk-backend:devops-cicd
+
+# Run frontend container
+docker run -d \
+  --name caredesk-frontend \
+  -p 5173:80 \
+  ghcr.io/rutikgawali01/caredesk-frontend:devops-cicd
+```
+
+
